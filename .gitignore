@@ -1,0 +1,80 @@
+# IDE and local agent state
+.idea/
+.vscode/
+.claude/
+.gemini/
+/.agents/
+/.codex/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Python bytecode and tool caches
+__pycache__/
+*.py[cod]
+*$py.class
+.cache/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.hypothesis/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.ipynb_checkpoints/
+
+# Python packaging and native build outputs
+*.so
+.Python
+/build/
+/dist/
+/.eggs/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+/.venv/
+/venv/
+/ENV/
+/env/
+
+# Logs, detached jobs, and crash dumps
+*.log
+/logs/
+/tmp_ray/
+nohup.out
+core
+core.*
+
+# ML/DL runtime outputs and model weights
+/wandb/
+/mlruns/
+/ray_results/
+/output/
+/checkpoints/
+/ckpt/
+*.ckpt
+*.pt
+*.pth
+*.bin
+*.safetensors
+
+# Legacy root-level data location. Active data belongs in artifacts/data/.
+/data/
+*.parquet
+
+# Local experiment artifacts. Keep only the layout documentation in Git.
+/artifacts/*
+!/artifacts/README.md
+
+# Local paper collections and drafts
+/PTQ_papers/
+/papers/
+/paper_draft/

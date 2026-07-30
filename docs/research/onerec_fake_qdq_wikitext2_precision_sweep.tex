@@ -1,0 +1,33 @@
+% Input this file from the main manuscript, e.g.:
+% \input{docs/research/onerec_fake_qdq_wikitext2_precision_sweep}
+% This fragment intentionally requires no non-standard LaTeX packages.
+\begin{table*}[!t]
+  \centering
+  \caption{OneRec-1.7B under fake QDQ on language modeling and recommendation.
+  WikiText-2 uses the complete raw test split (147 non-overlapping 2048-token
+  windows; 298,931 scored tokens). AD uses the same first 1,000 test examples
+  for every reported configuration, with 32 beams and 32 returned candidates;
+  $P@K$ and $R@K$ are SID-level metrics with first-$K$ selection. Weights use
+  per-output-channel QDQ and activations use dynamic per-token QDQ. ``BF16''
+  denotes an unquantized tensor; fake QDQ dequantizes before the BF16 matrix
+  multiplication. A dash denotes an AD configuration that has not been run.}
+  \label{tab:onerec-fake-qdq-precision-sweep}
+  \label{tab:onerec-fake-qdq-wikitext2}
+  \scriptsize
+  \setlength{\tabcolsep}{3.5pt}
+  \begin{tabular}{llrrr|rrrr}
+    \hline
+    & & \multicolumn{3}{c|}{WikiText-2} & \multicolumn{4}{c}{AD test (1,000)} \\
+    \cline{3-9}
+    Weight QDQ & Activation QDQ & NLL $\downarrow$ & PPL $\downarrow$ & $\Delta$PPL (\%) & $P@16$ $\uparrow$ & $P@32$ $\uparrow$ & $R@16$ $\uparrow$ & $R@32$ $\uparrow$ \\
+    \hline
+    BF16     & BF16     & 2.4737 & 11.8665 & --      & 0.1380 & 0.1920 & 0.0438 & 0.0657 \\
+    FP8 E4M3 & BF16     & 2.4774 & 11.9103 & +0.37   & --     & --     & --     & --     \\
+    FP8 E4M3 & FP8 E4M3 & 2.4810 & 11.9534 & +0.73   & 0.1150 & 0.1770 & 0.0353 & 0.0593 \\
+    INT8     & BF16     & 2.4732 & 11.8603 & -0.05   & --     & --     & --     & --     \\
+    INT8     & FP8 E4M3 & 2.4766 & 11.9004 & +0.29   & 0.1140 & 0.1760 & 0.0362 & 0.0591 \\
+    INT4     & BF16     & 3.3039 & 27.2196 & +129.38 & --     & --     & --     & --     \\
+    INT4     & FP8 E4M3 & 3.3095 & 27.3710 & +130.66 & 0.0180 & 0.0240 & 0.0050 & 0.0072 \\
+    \hline
+  \end{tabular}
+\end{table*}
