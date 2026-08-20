@@ -1,0 +1,57 @@
+% Required packages:
+% \usepackage{booktabs}
+% \usepackage{graphicx}
+
+\begin{table*}[t]
+\centering
+\caption{Estimated static weight memory under different weight bit-widths.}
+\label{tab:weight_memory}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{cccccccc}
+\toprule
+\begin{tabular}[c]{@{}c@{}}Model\end{tabular}
+& \begin{tabular}[c]{@{}c@{}}Parameters\end{tabular}
+& \begin{tabular}[c]{@{}c@{}}Quantized\\Weights\end{tabular}
+& \begin{tabular}[c]{@{}c@{}}16-bit\\Memory (GB)\end{tabular}
+& \multicolumn{2}{c}{%
+    \begin{tabular}[c]{@{}cc@{}}
+    \multicolumn{2}{c}{8-bit Weights} \\
+    \cmidrule(lr){1-2}
+    Memory (GB) & Saving
+    \end{tabular}}
+& \multicolumn{2}{c}{%
+    \begin{tabular}[c]{@{}cc@{}}
+    \multicolumn{2}{c}{4-bit Weights} \\
+    \cmidrule(lr){1-2}
+    Memory (GB) & Saving
+    \end{tabular}} \\
+\midrule
+\textit{OpenOneRec-1.7B}
+& 1.771B
+& 79.6\%
+& 3.54
+& 2.13
+& 39.7\%
+& \textbf{1.43}
+& \textbf{59.6\%} \\
+\textit{OpenOneRec-8B}
+& 8.391B
+& 82.8\%
+& 16.78
+& 9.84
+& 41.4\%
+& \textbf{6.37}
+& \textbf{62.0\%} \\
+\bottomrule
+\end{tabular}%
+}
+
+\vspace{0.4em}
+\begin{minipage}{0.98\textwidth}
+\footnotesize
+Memory values are analytical estimates for model-resident weights using decimal GB.
+Only the projection weights in attention and MLP blocks are quantized.
+All remaining weights stay in 16-bit precision.
+Per-output-channel quantization metadata is included.
+\end{minipage}
+\end{table*}

@@ -29,7 +29,7 @@ benchmarks/benchmark/       OpenOneRec/RecIF-Bench evaluator
 scripts/fake_quant/         fake-quant 串行实验入口
 scripts/real_quant/         real-quant 串行实验入口
 shared/                     模型、数据和结果路径的统一定义
-docs/research/              研究表格与保留的 probe 总结
+docs/              研究表格与保留的 probe 总结
 artifacts/                  模型、数据、结果和探测归档（Git 忽略）
 ```
 
@@ -37,6 +37,11 @@ artifacts/                  模型、数据、结果和探测归档（Git 忽略
 decode-A16 fake-quant ablation 和一次性 profile/分布探测代码已删除。当前没有
 可运行的 pytest suite；修改后至少应做核心模块 import、CLI smoke test 和小样本
 实验。缓存目录可以随时删除。
+
+清理补充（2026-08-18）：主代码只保留 OmniQuant 的逐层 MSE 与最后一层
+ABC-LFQ；实验效果不佳的 LFQ-ALL、Beam-KL 训练目标、低秩补偿分支和一次性
+绘图/实验 launcher 已删除。普通推荐 beam-search 解码、多卡分片测评及历史
+结果文档不受影响。
 
 权重与 activation 探测代码已经删除，保留的完整结果归档为：
 
@@ -102,31 +107,53 @@ python -m fake_quant.run_m1_onerec_ad --help
 `baseline_qdq` 支持权重和 activation 独立选择：
 
 ```text
-none / fp8_e4m3fn / int8 / int4
+none / fp8_e4m3fn / fp4_e2m1 / int8 / int6 / int4
 ```
 
-例如 INT4-W/BF16-A 为 `int4 + none`，INT4-W/FP8-A 为
-`int4 + fp8_e4m3fn`。整数权重基线采用 per-output-channel QDQ；
-activation 非 `none` 时采用 dynamic per-token QDQ。fake-QDQ 最终仍以模型
-dtype 执行 `F.linear`。
+主实验协议统一使用整数权重与整数 activation。入口默认是
+`baseline_qdq + asymmetric INT8-W + dynamic per-token symmetric INT8-A`；
+例如 W4A8 只需把权重格式指定为 `int4`。INT4-W/BF16-A 和 FP8 组合只作为
+显式消融或历史/部署对照，不与整数 PTQ 主结果混用。整数权重采用
+per-output-channel QDQ，整数 activation 采用 dynamic per-token symmetric
+QDQ；fake-QDQ 最终仍以模型 dtype 执行 `F.linear`。`fp4_e2m1` 使用标准有限
+E2M1 codebook、round-to-nearest-ties-to-even、权重 per-output-channel scale 与
+activation dynamic per-token scale；浮点权重格式只允许 symmetric QDQ。
 
-OmniQuant 实现在 `fake_quant/omniquant/runtime.py`，采用逐 block 的输出重构
+统一数值契约（2026-08-18 起）为 deployment-matched，适用于 RTN、
+SmoothQuant、GPTQ、OmniQuant 和 LFQ：FP32 只用于 master weight、量化参数、
+scale/zero-point/QDQ 算术及 loss；QDQ 后的权重与 activation 必须先转回模型
+dtype，再执行 Linear、RMSNorm、attention、MLP、残差和 LM head。该契约没有
+兼容开关。旧 OmniQuant checkpoint 属于 FP32-surrogate 校准路径，元数据校验
+会拒绝加载，必须重新校准。
+
+OmniQuant 实现在 fake_quant/omniquant/runtime.py，采用逐 block 的输出重构
 MSE。当前包含：
 
-- LWC：每个 Linear、每个输出通道学习 clipping 参数；
+- LWC：每个 Linear、每个输出通道学习 clipping 参数；INT4/INT6/INT8 支持 symmetric
+  和 asymmetric，FP8 E4M3FN 支持 zero-centered symmetric clipping；
 - LET-QKV：input norm 到共享 Q/K/V scale；
 - LET-MLP：post-attention norm 到共享 gate/up scale；
 - LET-V/O：适配 Qwen3 GQA head 排列的 V→O scale；
 - `--omni_let_mode none|fixed|learned`：分别表示关闭、固定 SmoothQuant
   初始化、学习 LET。
 
+默认校准协议为128条样本；OmniQuant 默认优化20 epochs，LWC/LET 学习率
+分别为1e-2/5e-3，weight decay 为0且不做梯度裁剪。固定 SmoothQuant
+与 OmniQuant 的 SQ-init 共用 alpha=0.4，该值由 AD calibration block MSE
+搜索得到。
+
 ### Asymmetric LWC 的当前实现
 
-`--omni_weight_quant_scheme` 支持：
+`--weight_quant_scheme` 支持：
 
-- `symmetric`：旧的 signed、单 clipping 参数实现，用于复现已有结果；
+- `symmetric`：zero-centered、单 clipping 参数实现；INT4/INT6/INT8 使用 signed
+  uniform QDQ，FP8 使用 E4M3FN cast QDQ；
 - `asymmetric`：论文式双边 LWC，每个输出通道分别学习 upper/lower clipping，
-  使用 zero point 和 `[0, 2^N-1]` 整数码域。
+  使用 zero point 和 `[0, 2^N-1]` 整数码域，仅适用于 INT4/INT6/INT8。
+
+默认规则为 INT4/INT6/INT8 权重使用 `asymmetric`，FP8 权重使用
+`symmetric`。该规则同时用于普通 RTN 和 OmniQuant；旧参数名
+`--omni_weight_quant_scheme` 保留为兼容别名。
 
 对一个输出通道，asymmetric 路径为：
 
@@ -143,11 +170,8 @@ W_qdq = (Q - zero_point) * scale
 `final_loss > initial_loss`，也会保留真实训练后参数并传播到下一层；NaN/Inf
 仍然直接报错。checkpoint 保存上下界两组 logits。
 
-注意：CLI 默认 scheme 仍为 `symmetric`，运行新论文对齐实验时必须显式写：
-
-```text
---omni_weight_quant_scheme asymmetric
-```
+需要复现历史 symmetric INT 结果时，必须显式写
+`--weight_quant_scheme symmetric`。
 
 ## 已完成的关键结果
 

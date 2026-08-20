@@ -8,6 +8,7 @@
 *.swp
 *.swo
 *~
+*.orig
 
 # OS
 .DS_Store
@@ -78,3 +79,4 @@ core.*
 /PTQ_papers/
 /papers/
 /paper_draft/
+/*-PPT大纲.md

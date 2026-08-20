@@ -1,0 +1,584 @@
+{
+  "schema_version": 1,
+  "analysis": "bf16_ad_sid_a_full_vocabulary_distribution",
+  "model_path": "/zssd/home/yhhuang/Projects/OOR-Quant_v2/artifacts/models/1.7B",
+  "model_dtype": "bfloat16",
+  "log_softmax_dtype": "float32",
+  "plot_y_axis": "token_probability",
+  "task": "ad",
+  "split": "test",
+  "sample_id": "263",
+  "sample_source_index": 263,
+  "selection_rule": "explicit --sample_id",
+  "prompt_token": "<|sid_begin|>",
+  "prompt_token_count": 608,
+  "probability_normalization_scope": "complete_model_vocabulary",
+  "full_vocabulary_size": 176384,
+  "sid_a_vocabulary_size": 8192,
+  "top_k": 50,
+  "top_k_probability_mass": 0.3928443491458893,
+  "top32_probability_mass": 0.3274560868740082,
+  "top_k_sid_a_token_count": 50,
+  "top32_sid_a_token_count": 32,
+  "sid_a_probability_mass": 0.9996396899223328,
+  "rank32_vs_rank33_log_probability_margin": 0.0,
+  "entropy_nats": 6.408968925476074,
+  "effective_support_exp_entropy": 607.2672203929937,
+  "positive_sid_a_probability_mass": 0.015988337353741926,
+  "ground_truth_complete_sids": [
+    "<s_a_2215><s_b_6110><s_c_7111>",
+    "<s_a_5090><s_b_624><s_c_96>",
+    "<s_a_795><s_b_7211><s_c_5036>",
+    "<s_a_2493><s_b_4380><s_c_2493>",
+    "<s_a_2020><s_b_6832><s_c_3111>",
+    "<s_a_4408><s_b_1737><s_c_5019>",
+    "<s_a_2951><s_b_1487><s_c_8026>",
+    "<s_a_7567><s_b_4711><s_c_1432>",
+    "<s_a_7614><s_b_4716><s_c_3611>",
+    "<s_a_6728><s_b_624><s_c_372>"
+  ],
+  "positive_sid_a": [
+    {
+      "token": "<s_a_2493>",
+      "token_id": 154162,
+      "rank": 24,
+      "log_probability": -5.181329727172852,
+      "probability": 0.005620527674789467,
+      "complete_sid_count": 1,
+      "in_top_k": true
+    },
+    {
+      "token": "<s_a_6728>",
+      "token_id": 158397,
+      "rank": 53,
+      "log_probability": -5.806329727172852,
+      "probability": 0.0030084516722383285,
+      "complete_sid_count": 1,
+      "in_top_k": false
+    },
+    {
+      "token": "<s_a_7567>",
+      "token_id": 159236,
+      "rank": 54,
+      "log_probability": -5.806329727172852,
+      "probability": 0.0030084516722383285,
+      "complete_sid_count": 1,
+      "in_top_k": false
+    },
+    {
+      "token": "<s_a_2215>",
+      "token_id": 153884,
+      "rank": 140,
+      "log_probability": -6.681329727172852,
+      "probability": 0.0012541092401944555,
+      "complete_sid_count": 1,
+      "in_top_k": false
+    },
+    {
+      "token": "<s_a_7614>",
+      "token_id": 159283,
+      "rank": 199,
+      "log_probability": -6.931329727172852,
+      "probability": 0.0009767012583205266,
+      "complete_sid_count": 1,
+      "in_top_k": false
+    },
+    {
+      "token": "<s_a_2951>",
+      "token_id": 154620,
+      "rank": 275,
+      "log_probability": -7.306329727172852,
+      "probability": 0.0006712763034253498,
+      "complete_sid_count": 1,
+      "in_top_k": false
+    },
+    {
+      "token": "<s_a_2020>",
+      "token_id": 153689,
+      "rank": 310,
+      "log_probability": -7.431329727172852,
+      "probability": 0.0005923992585513081,
+      "complete_sid_count": 1,
+      "in_top_k": false
+    },
+    {
+      "token": "<s_a_4408>",
+      "token_id": 156077,
+      "rank": 435,
+      "log_probability": -7.806329727172852,
+      "probability": 0.0004071496591660353,
+      "complete_sid_count": 1,
+      "in_top_k": false
+    },
+    {
+      "token": "<s_a_5090>",
+      "token_id": 156759,
+      "rank": 533,
+      "log_probability": -8.056329727172852,
+      "probability": 0.00031708847338576384,
+      "complete_sid_count": 1,
+      "in_top_k": false
+    },
+    {
+      "token": "<s_a_795>",
+      "token_id": 152464,
+      "rank": 948,
+      "log_probability": -8.931329727172852,
+      "probability": 0.0001321821414323645,
+      "complete_sid_count": 1,
+      "in_top_k": false
+    }
+  ],
+  "top_k_tokens": [
+    {
+      "rank": 1,
+      "token": "<s_a_342>",
+      "token_id": 152011,
+      "log_probability": -3.0563299655914307,
+      "probability": 0.04706009083019317,
+      "is_positive": false,
+      "is_sid_a": true
+    },
+    {
+      "rank": 2,
+      "token": "<s_a_4393>",
+      "token_id": 156062,
+      "log_probability": -3.6813299655914307,
+      "probability": 0.02518945144400263,
+      "is_positive": false,
+      "is_sid_a": true
+    },
+    {
+      "rank": 3,
+      "token": "<s_a_458>",
+      "token_id": 152127,
+      "log_probability": -3.8063299655914307,
+      "probability": 0.022229612877137386,
+      "is_positive": false,
+      "is_sid_a": true
+    },
+    {
+      "rank": 4,
+      "token": "<s_a_3837>",
+      "token_id": 155506,
+      "log_probability": -4.056329727172852,
+      "probability": 0.017312444043696598,
+      "is_positive": false,
+      "is_sid_a": true
+    },
+    {
+      "rank": 5,
+      "token": "<s_a_2595>",
+      "token_id": 154264,
+      "log_probability": -4.181329727172852,
+      "probability": 0.015278178244731377,
+      "is_positive": false,
+      "is_sid_a": true
+    },
+    {
+      "rank": 6,
+      "token": "<s_a_3828>",
+      "token_id": 155497,
+      "log_probability": -4.181329727172852,
+      "probability": 0.015278178244731377,
+      "is_positive": false,
+      "is_sid_a": true
+    },
+    {
+      "rank": 7,
+      "token": "<s_a_3653>",
+      "token_id": 155322,
+      "log_probability": -4.431329727172852,
+      "probability": 0.011898657180901297,
+      "is_positive": false,
+      "is_sid_a": true
+    },
+    {
+      "rank": 8,
+      "token": "<s_a_615>",
+      "token_id": 152284,
+      "log_probability": -4.556329727172852,
+      "probability": 0.01050052810706135,
+      "is_positive": false,
+      "is_sid_a": true
+    },
+    {
+      "rank": 9,
+      "token": "<s_a_5758>",
+      "token_id": 157427,
+      "log_probability": -4.556329727172852,
+      "probability": 0.01050052810706135,
+      "is_positive": false,
+      "is_sid_a": true
+    },
+    {
+      "rank": 10,
+      "token": "<s_a_6102>",
+      "token_id": 157771,
+      "log_probability": -4.556329727172852,
+      "probability": 0.01050052810706135,
+      "is_positive": false,
+      "is_sid_a": true
+    },
+    {
+      "rank": 11,
+      "token": "<s_a_5228>",
+      "token_id": 156897,
+      "log_probability": -4.681329727172852,
+      "probability": 0.009266683529984126,
+      "is_positive": false,
+      "is_sid_a": true
+    },
+    {
+      "rank": 12,
+      "token": "<s_a_1354>",
+      "token_id": 153023,
+      "log_probability": -4.806329727172852,
+      "probability": 0.008177819512442676,
+      "is_positive": false,
+      "is_sid_a": true
+    },
+    {
+      "rank": 13,
+      "token": "<s_a_1418>",
+      "token_id": 153087,
+      "log_probability": -4.806329727172852,
+      "probability": 0.008177819512442676,
+      "is_positive": false,
+      "is_sid_a": true
+    },
+    {
+      "rank": 14,
+      "token": "<s_a_2701>",
+      "token_id": 154370,
+      "log_probability": -4.806329727172852,
+      "probability": 0.008177819512442676,
+      "is_positive": false,
+      "is_sid_a": true
+    },
+    {
+      "rank": 15,
+      "token": "<s_a_4605>",
+      "token_id": 156274,
+      "log_probability": -4.806329727172852,
+      "probability": 0.008177819512442676,
+      "is_positive": false,
+      "is_sid_a": true
+    },
+    {
+      "rank": 16,
+      "token": "<s_a_5669>",
+      "token_id": 157338,
+      "log_probability": -4.806329727172852,
+      "probability": 0.008177819512442676,
+      "is_positive": false,
+      "is_sid_a": true
+    },
+    {
+      "rank": 17,
+      "token": "<s_a_5736>",
+      "token_id": 157405,
+      "log_probability": -4.806329727172852,
+      "probability": 0.008177819512442676,
+      "is_positive": false,
+      "is_sid_a": true
+    },
+    {
+      "rank": 18,
+      "token": "<s_a_4525>",
+      "token_id": 156194,
+      "log_probability": -4.931329727172852,
+      "probability": 0.007216900389626527,
+      "is_positive": false,
+      "is_sid_a": true
+    },
+    {
+      "rank": 19,
+      "token": "<s_a_6762>",
+      "token_id": 158431,
+      "log_probability": -4.931329727172852,
+      "probability": 0.007216900389626527,
+      "is_positive": false,
+      "is_sid_a": true
+    },
+    {
+      "rank": 20,
+      "token": "<s_a_4247>",
+      "token_id": 155916,
+      "log_probability": -5.056329727172852,
+      "probability": 0.00636889224010697,
+      "is_positive": false,
+      "is_sid_a": true
+    },
+    {
+      "rank": 21,
+      "token": "<s_a_5719>",
+      "token_id": 157388,
+      "log_probability": -5.056329727172852,
+      "probability": 0.00636889224010697,
+      "is_positive": false,
+      "is_sid_a": true
+    },
+    {
+      "rank": 22,
+      "token": "<s_a_6079>",
+      "token_id": 157748,
+      "log_probability": -5.056329727172852,
+      "probability": 0.00636889224010697,
+      "is_positive": false,
+      "is_sid_a": true
+    },
+    {
+      "rank": 23,
+      "token": "<s_a_2452>",
+      "token_id": 154121,
+      "log_probability": -5.181329727172852,
+      "probability": 0.005620527674789467,
+      "is_positive": false,
+      "is_sid_a": true
+    },
+    {
+      "rank": 24,
+      "token": "<s_a_2493>",
+      "token_id": 154162,
+      "log_probability": -5.181329727172852,
+      "probability": 0.005620527674789467,
+      "is_positive": true,
+      "is_sid_a": true
+    },
+    {
+      "rank": 25,
+      "token": "<s_a_4845>",
+      "token_id": 156514,
+      "log_probability": -5.181329727172852,
+      "probability": 0.005620527674789467,
+      "is_positive": false,
+      "is_sid_a": true
+    },
+    {
+      "rank": 26,
+      "token": "<s_a_623>",
+      "token_id": 152292,
+      "log_probability": -5.306329727172852,
+      "probability": 0.004960098263892702,
+      "is_positive": false,
+      "is_sid_a": true
+    },
+    {
+      "rank": 27,
+      "token": "<s_a_3514>",
+      "token_id": 155183,
+      "log_probability": -5.306329727172852,
+      "probability": 0.004960098263892702,
+      "is_positive": false,
+      "is_sid_a": true
+    },
+    {
+      "rank": 28,
+      "token": "<s_a_5456>",
+      "token_id": 157125,
+      "log_probability": -5.306329727172852,
+      "probability": 0.004960098263892702,
+      "is_positive": false,
+      "is_sid_a": true
+    },
+    {
+      "rank": 29,
+      "token": "<s_a_6580>",
+      "token_id": 158249,
+      "log_probability": -5.306329727172852,
+      "probability": 0.004960098263892702,
+      "is_positive": false,
+      "is_sid_a": true
+    },
+    {
+      "rank": 30,
+      "token": "<s_a_1278>",
+      "token_id": 152947,
+      "log_probability": -5.431329727172852,
+      "probability": 0.004377271354400539,
+      "is_positive": false,
+      "is_sid_a": true
+    },
+    {
+      "rank": 31,
+      "token": "<s_a_2432>",
+      "token_id": 154101,
+      "log_probability": -5.431329727172852,
+      "probability": 0.004377271354400539,
+      "is_positive": false,
+      "is_sid_a": true
+    },
+    {
+      "rank": 32,
+      "token": "<s_a_4265>",
+      "token_id": 155934,
+      "log_probability": -5.431329727172852,
+      "probability": 0.004377271354400539,
+      "is_positive": false,
+      "is_sid_a": true
+    },
+    {
+      "rank": 33,
+      "token": "<s_a_4634>",
+      "token_id": 156303,
+      "log_probability": -5.431329727172852,
+      "probability": 0.004377271354400539,
+      "is_positive": false,
+      "is_sid_a": true
+    },
+    {
+      "rank": 34,
+      "token": "<s_a_5211>",
+      "token_id": 156880,
+      "log_probability": -5.431329727172852,
+      "probability": 0.004377271354400539,
+      "is_positive": false,
+      "is_sid_a": true
+    },
+    {
+      "rank": 35,
+      "token": "<s_a_7224>",
+      "token_id": 158893,
+      "log_probability": -5.431329727172852,
+      "probability": 0.004377271354400539,
+      "is_positive": false,
+      "is_sid_a": true
+    },
+    {
+      "rank": 36,
+      "token": "<s_a_1790>",
+      "token_id": 153459,
+      "log_probability": -5.556329727172852,
+      "probability": 0.0038629284120307522,
+      "is_positive": false,
+      "is_sid_a": true
+    },
+    {
+      "rank": 37,
+      "token": "<s_a_4113>",
+      "token_id": 155782,
+      "log_probability": -5.556329727172852,
+      "probability": 0.0038629284120307522,
+      "is_positive": false,
+      "is_sid_a": true
+    },
+    {
+      "rank": 38,
+      "token": "<s_a_4928>",
+      "token_id": 156597,
+      "log_probability": -5.556329727172852,
+      "probability": 0.0038629284120307522,
+      "is_positive": false,
+      "is_sid_a": true
+    },
+    {
+      "rank": 39,
+      "token": "<s_a_5366>",
+      "token_id": 157035,
+      "log_probability": -5.556329727172852,
+      "probability": 0.0038629284120307522,
+      "is_positive": false,
+      "is_sid_a": true
+    },
+    {
+      "rank": 40,
+      "token": "<s_a_7497>",
+      "token_id": 159166,
+      "log_probability": -5.556329727172852,
+      "probability": 0.0038629284120307522,
+      "is_positive": false,
+      "is_sid_a": true
+    },
+    {
+      "rank": 41,
+      "token": "<s_a_7886>",
+      "token_id": 159555,
+      "log_probability": -5.556329727172852,
+      "probability": 0.0038629284120307522,
+      "is_positive": false,
+      "is_sid_a": true
+    },
+    {
+      "rank": 42,
+      "token": "<s_a_531>",
+      "token_id": 152200,
+      "log_probability": -5.681329727172852,
+      "probability": 0.0034090223585231685,
+      "is_positive": false,
+      "is_sid_a": true
+    },
+    {
+      "rank": 43,
+      "token": "<s_a_1953>",
+      "token_id": 153622,
+      "log_probability": -5.681329727172852,
+      "probability": 0.0034090223585231685,
+      "is_positive": false,
+      "is_sid_a": true
+    },
+    {
+      "rank": 44,
+      "token": "<s_a_4056>",
+      "token_id": 155725,
+      "log_probability": -5.681329727172852,
+      "probability": 0.0034090223585231685,
+      "is_positive": false,
+      "is_sid_a": true
+    },
+    {
+      "rank": 45,
+      "token": "<s_a_4162>",
+      "token_id": 155831,
+      "log_probability": -5.681329727172852,
+      "probability": 0.0034090223585231685,
+      "is_positive": false,
+      "is_sid_a": true
+    },
+    {
+      "rank": 46,
+      "token": "<s_a_6477>",
+      "token_id": 158146,
+      "log_probability": -5.681329727172852,
+      "probability": 0.0034090223585231685,
+      "is_positive": false,
+      "is_sid_a": true
+    },
+    {
+      "rank": 47,
+      "token": "<s_a_758>",
+      "token_id": 152427,
+      "log_probability": -5.806329727172852,
+      "probability": 0.0030084516722383285,
+      "is_positive": false,
+      "is_sid_a": true
+    },
+    {
+      "rank": 48,
+      "token": "<s_a_2360>",
+      "token_id": 154029,
+      "log_probability": -5.806329727172852,
+      "probability": 0.0030084516722383285,
+      "is_positive": false,
+      "is_sid_a": true
+    },
+    {
+      "rank": 49,
+      "token": "<s_a_4362>",
+      "token_id": 156031,
+      "log_probability": -5.806329727172852,
+      "probability": 0.0030084516722383285,
+      "is_positive": false,
+      "is_sid_a": true
+    },
+    {
+      "rank": 50,
+      "token": "<s_a_5596>",
+      "token_id": 157265,
+      "log_probability": -5.806329727172852,
+      "probability": 0.0030084516722383285,
+      "is_positive": false,
+      "is_sid_a": true
+    }
+  ]
+}

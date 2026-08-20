@@ -2,15 +2,15 @@
 set -euo pipefail
 
 # Run OneRec fake-QDQ quantization on the AD benchmark.
-# Fixed defaults live in fake_quant/run_m1_onerec_ad.py:
-# calib split auto-detects calib1024, eval split is test, shared-input
-# activation QDQ is used whenever activations are quantized, and generation
+# Defaults live in fake_quant/run_m1_onerec_ad.py. Calibration and evaluation
+# use the shared benchmark_data directory, and recommendation generation uses
+# deterministic 32-beam decoding.
 # uses 32 beams.
 #
 # Examples:
 #   bash fake_quant/run_learnable_quant_ad.sh
 #   MODE=smoothquant_w8a8 DEVICE=cuda:1 bash fake_quant/run_learnable_quant_ad.sh
-#   MODE=baseline_qdq WEIGHT_QUANT_FORMAT=int4 ACTIVATION_QUANT_FORMAT=fp8_e4m3fn DEVICE=cuda:7 bash scripts/fake_quant/run_learnable_quant_ad.sh
+#   WEIGHT_QUANT_FORMAT=int4 ACTIVATION_QUANT_FORMAT=int8 DEVICE=cuda:7 bash scripts/fake_quant/run_learnable_quant_ad.sh
 
 SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
 SCRIPT_DIR="$(cd "$(dirname "${SCRIPT_PATH}")" && pwd)"
@@ -20,9 +20,9 @@ cd "${REPO_ROOT}"
 ARTIFACTS_ROOT="${OOR_QUANT_ARTIFACTS:-${REPO_ROOT}/artifacts}"
 FAKE_RESULTS_ROOT="${ARTIFACTS_ROOT}/results/fake_quant"
 
-MODE="${MODE:-baseline_w8a8}"  # baseline_qdq, baseline_w8a8, smoothquant_w8a8, or gptq_fp8_w8a8
-WEIGHT_QUANT_FORMAT="${WEIGHT_QUANT_FORMAT:-fp8_e4m3fn}"
-ACTIVATION_QUANT_FORMAT="${ACTIVATION_QUANT_FORMAT:-fp8_e4m3fn}"
+MODE="${MODE:-baseline_qdq}"  # baseline_qdq, baseline_w8a8, smoothquant_w8a8, or gptq_fp8_w8a8
+WEIGHT_QUANT_FORMAT="${WEIGHT_QUANT_FORMAT:-int8}"
+ACTIVATION_QUANT_FORMAT="${ACTIVATION_QUANT_FORMAT:-int8}"
 MODEL_PATH="${MODEL_PATH:-${ARTIFACTS_ROOT}/models/1.7B}"
 DATA_DIR="${DATA_DIR:-${ARTIFACTS_ROOT}/data/onerec_data/benchmark_data}"
 OUTPUT_DIR="${OUTPUT_DIR:-}"

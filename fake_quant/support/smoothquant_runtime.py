@@ -9,13 +9,20 @@ from .smoothquant_core import compute_smooth_scale, smooth_linear_weight
 
 from ..apply import SmoothScope, should_apply_smooth_transform
 from ..modules import BaselineFakeQuantLinear, SmoothQuantFakeQuantLinear
-from ..quant import ActQuant, fp8_weight_per_channel_forward
+from ..quant import (
+    ActQuant,
+    QuantFormat,
+    WeightQuantScheme,
+    resolve_weight_quant_scheme,
+    validate_quant_format,
+    weight_per_output_channel_qdq_forward,
+)
 from .runtime_utils import _module_device, _move_tree_to_device
 
 
 Batch = Any
 
-DEFAULT_SMOOTHQUANT_ALPHA = 0.5
+DEFAULT_SMOOTHQUANT_ALPHA = 0.4
 DEFAULT_SMOOTHQUANT_MIN_SCALE = None
 DEFAULT_SMOOTHQUANT_MAX_SCALE = None
 DEFAULT_SMOOTH_SCOPE: SmoothScope = "omni"
@@ -35,18 +42,17 @@ def _batch_to_args_kwargs(batch: Batch) -> tuple[tuple[Any, ...], dict[str, Any]
     return (batch,), {}
 
 
-def collect_smoothquant_scales(
+SmoothQuantStatistics = dict[str, tuple[torch.Tensor, torch.Tensor]]
+
+
+def collect_smoothquant_statistics(
     module: nn.Module,
     batches: Sequence[Batch],
     *,
-    alpha: float = DEFAULT_SMOOTHQUANT_ALPHA,
-    min_scale: float | None = DEFAULT_SMOOTHQUANT_MIN_SCALE,
-    max_scale: float | None = DEFAULT_SMOOTHQUANT_MAX_SCALE,
     smooth_scope: SmoothScope = DEFAULT_SMOOTH_SCOPE,
     eps: float = 1e-12,
-) -> dict[str, torch.Tensor]:
-    if not 0.0 <= alpha <= 1.0:
-        raise ValueError(f"smoothquant alpha must be in [0, 1], got {alpha}")
+) -> SmoothQuantStatistics:
+    """Collect alpha-independent activation/weight absmax statistics once."""
     linear_modules = {
         name: child
         for name, child in module.named_modules()
@@ -58,40 +64,82 @@ def collect_smoothquant_scales(
         return {}
 
     act_absmax = _collect_linear_input_absmax(module, batches, linear_modules)
-    scales: dict[str, torch.Tensor] = {}
+    statistics: SmoothQuantStatistics = {}
     grouped: set[str] = set()
     for group in _known_smoothquant_input_group_names(linear_modules):
         members = [name for name in group if name in act_absmax]
         if len(members) != len(group):
             continue
-        act_max = torch.stack([act_absmax[name].float().cpu() for name in members]).amax(dim=0)
-        weight_max = torch.stack(
-            [_linear_input_weight_absmax(linear_modules[name], eps=eps).cpu() for name in members]
+        act_max = torch.stack(
+            [act_absmax[name].float().cpu() for name in members]
         ).amax(dim=0)
-        scale = _smoothquant_scale(
-            act_max,
-            weight_max,
-            alpha=alpha,
-            min_scale=min_scale,
-            max_scale=max_scale,
-            eps=eps,
-        )
+        weight_max = torch.stack(
+            [
+                _linear_input_weight_absmax(linear_modules[name], eps=eps).cpu()
+                for name in members
+            ]
+        ).amax(dim=0)
         for name in members:
-            scales[name] = scale.clone()
+            statistics[name] = (act_max.clone(), weight_max.clone())
             grouped.add(name)
 
     for name, linear in linear_modules.items():
         if name in grouped or name not in act_absmax:
             continue
-        scales[name] = _smoothquant_scale(
+        statistics[name] = (
             act_absmax[name].float().cpu(),
             _linear_input_weight_absmax(linear, eps=eps).cpu(),
+        )
+    return statistics
+
+
+def smoothquant_scales_from_statistics(
+    statistics: Mapping[str, tuple[torch.Tensor, torch.Tensor]],
+    *,
+    alpha: float = DEFAULT_SMOOTHQUANT_ALPHA,
+    min_scale: float | None = DEFAULT_SMOOTHQUANT_MIN_SCALE,
+    max_scale: float | None = DEFAULT_SMOOTHQUANT_MAX_SCALE,
+    eps: float = 1e-12,
+) -> dict[str, torch.Tensor]:
+    """Build per-channel SmoothQuant scales for one alpha."""
+    if not 0.0 <= alpha <= 1.0:
+        raise ValueError(f"smoothquant alpha must be in [0, 1], got {alpha}")
+    return {
+        name: _smoothquant_scale(
+            act_absmax,
+            weight_absmax,
             alpha=alpha,
             min_scale=min_scale,
             max_scale=max_scale,
             eps=eps,
         )
-    return scales
+        for name, (act_absmax, weight_absmax) in statistics.items()
+    }
+
+
+def collect_smoothquant_scales(
+    module: nn.Module,
+    batches: Sequence[Batch],
+    *,
+    alpha: float = DEFAULT_SMOOTHQUANT_ALPHA,
+    min_scale: float | None = DEFAULT_SMOOTHQUANT_MIN_SCALE,
+    max_scale: float | None = DEFAULT_SMOOTHQUANT_MAX_SCALE,
+    smooth_scope: SmoothScope = DEFAULT_SMOOTH_SCOPE,
+    eps: float = 1e-12,
+) -> dict[str, torch.Tensor]:
+    statistics = collect_smoothquant_statistics(
+        module,
+        batches,
+        smooth_scope=smooth_scope,
+        eps=eps,
+    )
+    return smoothquant_scales_from_statistics(
+        statistics,
+        alpha=alpha,
+        min_scale=min_scale,
+        max_scale=max_scale,
+        eps=eps,
+    )
 
 
 def _collect_linear_input_absmax(
@@ -184,19 +232,42 @@ def smoothquant_quantized_module_from_scales(
     scales: Mapping[str, torch.Tensor],
     *,
     act_quant: ActQuant,
+    weight_quant_format: QuantFormat = "fp8_e4m3fn",
+    weight_quant_scheme: WeightQuantScheme | None = None,
+    activation_quant_format: QuantFormat = "fp8_e4m3fn",
     smooth_scope: SmoothScope = DEFAULT_SMOOTH_SCOPE,
     folded_names: set[str] | None = None,
 ) -> tuple[nn.Module, int]:
+    weight_format = validate_quant_format(weight_quant_format)
+    weight_scheme = resolve_weight_quant_scheme(weight_format, weight_quant_scheme)
+    activation_format = validate_quant_format(activation_quant_format)
+    if act_quant == "none" and activation_format != "none":
+        raise ValueError("activation_quant_format must be 'none' when act_quant='none'.")
+    if act_quant == "per_token" and activation_format == "none":
+        raise ValueError("activation_quant_format='none' requires act_quant='none'.")
     if isinstance(module, nn.Linear):
         scale = scales.get("")
         if scale is None:
             raise ValueError("Missing SmoothQuant scale for root Linear module.")
-        return _smoothquant_fake_quant_linear(module, scale, act_quant=act_quant), 1
+        return (
+            _smoothquant_fake_quant_linear(
+                module,
+                scale,
+                act_quant=act_quant,
+                weight_quant_format=weight_format,
+                weight_quant_scheme=weight_scheme,
+                activation_quant_format=activation_format,
+            ),
+            1,
+        )
     return module, _replace_children_smoothquant(
         module,
         scales=scales,
         prefix="",
         act_quant=act_quant,
+        weight_quant_format=weight_format,
+        weight_quant_scheme=weight_scheme,
+        activation_quant_format=activation_format,
         smooth_scope=smooth_scope,
         folded_names=folded_names or set(),
     )
@@ -208,6 +279,9 @@ def _replace_children_smoothquant(
     scales: Mapping[str, torch.Tensor],
     prefix: str,
     act_quant: ActQuant,
+    weight_quant_format: QuantFormat,
+    weight_quant_scheme: WeightQuantScheme,
+    activation_quant_format: QuantFormat,
     smooth_scope: SmoothScope,
     folded_names: set[str],
 ) -> int:
@@ -225,10 +299,19 @@ def _replace_children_smoothquant(
                     child,
                     scale,
                     act_quant=act_quant,
+                    weight_quant_format=weight_quant_format,
+                    weight_quant_scheme=weight_quant_scheme,
+                    activation_quant_format=activation_quant_format,
                     fold_activation=full_name in folded_names,
                 )
             else:
-                replacement = BaselineFakeQuantLinear(child, act_quant=act_quant)
+                replacement = BaselineFakeQuantLinear(
+                    child,
+                    act_quant=act_quant,
+                    weight_quant_format=weight_quant_format,
+                    weight_quant_scheme=weight_quant_scheme,
+                    activation_quant_format=activation_quant_format,
+                )
             setattr(module, child_name, replacement)
             replaced += 1
             continue
@@ -237,6 +320,9 @@ def _replace_children_smoothquant(
             scales=scales,
             prefix=full_name,
             act_quant=act_quant,
+            weight_quant_format=weight_quant_format,
+            weight_quant_scheme=weight_quant_scheme,
+            activation_quant_format=activation_quant_format,
             smooth_scope=smooth_scope,
             folded_names=folded_names,
         )
@@ -248,6 +334,9 @@ def _smoothquant_fake_quant_linear(
     scale: torch.Tensor,
     *,
     act_quant: ActQuant,
+    weight_quant_format: QuantFormat,
+    weight_quant_scheme: WeightQuantScheme,
+    activation_quant_format: QuantFormat,
     fold_activation: bool = False,
 ) -> SmoothQuantFakeQuantLinear:
     scale = scale.detach().float().reshape(-1).to(device=linear.weight.device)
@@ -255,7 +344,11 @@ def _smoothquant_fake_quant_linear(
         raise ValueError(f"Expected SmoothQuant scale shape ({linear.in_features},), got {tuple(scale.shape)}")
     with torch.no_grad():
         scaled_weight = linear.weight.detach() if fold_activation else smooth_linear_weight(linear.weight.detach(), scale)
-        weight_qdq = fp8_weight_per_channel_forward(scaled_weight)
+        weight_qdq = weight_per_output_channel_qdq_forward(
+            scaled_weight,
+            quant_format=weight_quant_format,
+            quant_scheme=weight_quant_scheme,
+        )
         bias = None if linear.bias is None else linear.bias.detach().clone()
         input_scale = None if fold_activation else scale.detach().cpu()
     return SmoothQuantFakeQuantLinear(
@@ -263,6 +356,8 @@ def _smoothquant_fake_quant_linear(
         bias=bias,
         act_quant=act_quant,
         input_scale=input_scale,
+        weight_quant_format=weight_quant_format,
+        activation_quant_format=activation_quant_format,
     )
 
 

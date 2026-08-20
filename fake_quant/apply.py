@@ -13,7 +13,9 @@ from .quant import (
     ActQuant,
     ActQuantMode,
     QuantFormat,
+    WeightQuantScheme,
     activation_per_token_qdq_by_format,
+    resolve_weight_quant_scheme,
     validate_quant_format,
 )
 
@@ -65,8 +67,9 @@ def apply_baseline_w8a8(
 def apply_baseline_qdq(
     model: nn.Module,
     *,
-    weight_quant_format: QuantFormat = "fp8_e4m3fn",
-    activation_quant_format: QuantFormat = "fp8_e4m3fn",
+    weight_quant_format: QuantFormat = "int8",
+    weight_quant_scheme: WeightQuantScheme | None = None,
+    activation_quant_format: QuantFormat = "int8",
     act_quant_mode: ActQuantMode = "per_linear",
     skip_module_names: Iterable[str] = ("lm_head",),
     target_regex: str | None = None,
@@ -75,11 +78,13 @@ def apply_baseline_qdq(
     """Replace selected Linear modules with composable fake-QDQ wrappers.
 
     ``weight_quant_format`` and ``activation_quant_format`` are independently
-    selected from ``none``, ``fp8_e4m3fn``, ``int8``, and ``int4``.  INT4/INT8
-    values are dequantized before ``F.linear``; this path is for controlled
-    quality evaluation, not low-bit kernel benchmarking.
+    selected from ``none``, ``fp8_e4m3fn``, ``fp4_e2m1``, ``int8``, ``int6``,
+    and ``int4``.
+    Quantized values are dequantized before ``F.linear``; this path is for
+    controlled quality evaluation, not low-bit kernel benchmarking.
     """
     weight_format = validate_quant_format(weight_quant_format)
+    weight_scheme = resolve_weight_quant_scheme(weight_format, weight_quant_scheme)
     activation_format = validate_quant_format(activation_quant_format)
     act_quant: ActQuant = "none" if activation_format == "none" else "per_token"
     _validate_act_quant_mode(act_quant=act_quant, act_quant_mode=act_quant_mode)
@@ -91,6 +96,7 @@ def apply_baseline_qdq(
         prefix="",
         act_quant=act_quant,
         weight_quant_format=weight_format,
+        weight_quant_scheme=weight_scheme,
         activation_quant_format=activation_format,
         skip_names=skip_names,
         target_pattern=target_pattern,
@@ -173,6 +179,7 @@ def _replace_children_baseline(
     prefix: str,
     act_quant: ActQuant,
     weight_quant_format: QuantFormat,
+    weight_quant_scheme: WeightQuantScheme,
     activation_quant_format: QuantFormat,
     skip_names: set[str],
     target_pattern: re.Pattern[str] | None,
@@ -204,6 +211,7 @@ def _replace_children_baseline(
                     child,
                     act_quant=act_quant,
                     weight_quant_format=weight_quant_format,
+                    weight_quant_scheme=weight_quant_scheme,
                     activation_quant_format=activation_quant_format,
                 ),
             )
@@ -215,6 +223,7 @@ def _replace_children_baseline(
             prefix=full_name,
             act_quant=act_quant,
             weight_quant_format=weight_quant_format,
+            weight_quant_scheme=weight_quant_scheme,
             activation_quant_format=activation_quant_format,
             skip_names=skip_names,
             target_pattern=target_pattern,
@@ -287,6 +296,9 @@ def _shared_prepare_input(modules: tuple[Any, ...], x: torch.Tensor) -> torch.Te
     )
     eps = float(getattr(first, "eps", 1e-12))
     fp8_qmax = float(getattr(first, "qmax", 448.0))
+    quantize_activation = getattr(first, "quantize_activation", None)
+    if callable(quantize_activation):
+        return quantize_activation(x)
     return activation_per_token_qdq_by_format(
         x,
         quant_format=activation_quant_format,

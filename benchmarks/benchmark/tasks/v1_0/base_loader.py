@@ -55,7 +55,8 @@ class BaseLoader(ABC):
             require_answer: Require ``metadata["answer"]``.  Evaluation uses
                 the default; unlabeled PTQ calibration data does not.
             drop_final_assistant: Remove an SFT completion from messages before
-                formatting a calibration prompt.
+                formatting a calibration prompt. If ``metadata["answer"]`` is
+                absent, the removed completion is retained as ground truth.
 
         Returns:
             Dictionary mapping sample_id to sample data:
@@ -303,6 +304,7 @@ class BaseLoader(ABC):
         console.print(f"[cyan]Auto Thinking: {'✓ Enabled' if enable_thinking else '✗ Disabled'}[/cyan]")
 
         for idx, row in df.iterrows():
+            dropped_assistant_answer = None
             sample_id = str(idx)
 
             messages = row.get('messages')
@@ -324,6 +326,10 @@ class BaseLoader(ABC):
                 and isinstance(messages[-1], dict)
                 and messages[-1].get("role") == "assistant"
             ):
+                converted_completion = self._convert_messages_format([messages[-1]])
+                completion_content = converted_completion[0].get("content")
+                if not self._is_empty_value(completion_content):
+                    dropped_assistant_answer = str(completion_content).strip()
                 messages = messages[:-1]
 
             messages = self._convert_messages_format(messages)
@@ -355,8 +361,10 @@ class BaseLoader(ABC):
             else:
                 console.print(f"Sample {sample_id}: invalid metadata format, skipping")
                 continue
-
             answer = metadata_dict.get('answer')
+            if self._is_empty_value(answer) and dropped_assistant_answer is not None:
+                answer = dropped_assistant_answer
+
             if require_answer and self._is_empty_value(answer):
                 console.print(f"Sample {sample_id}: answer is empty in metadata, skipping")
                 continue

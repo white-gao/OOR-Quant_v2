@@ -8,8 +8,10 @@ from .quant import (
     ActQuant,
     FP8_MAX,
     QuantFormat,
+    WeightQuantScheme,
     activation_per_token_qdq_by_format,
     quant_format_qmax,
+    resolve_weight_quant_scheme,
     validate_quant_format,
     weight_per_output_channel_qdq_forward,
 )
@@ -31,7 +33,8 @@ class BaselineFakeQuantLinear(nn.Module):
         act_quant: ActQuant = "none",
         qmax: float = FP8_MAX,
         eps: float = 1e-12,
-        weight_quant_format: QuantFormat = "fp8_e4m3fn",
+        weight_quant_format: QuantFormat = "int8",
+        weight_quant_scheme: WeightQuantScheme | None = None,
         activation_quant_format: QuantFormat | None = None,
     ) -> None:
         super().__init__()
@@ -39,8 +42,9 @@ class BaselineFakeQuantLinear(nn.Module):
             raise ValueError(f"Unsupported act_quant: {act_quant}")
 
         weight_format = validate_quant_format(weight_quant_format)
+        weight_scheme = resolve_weight_quant_scheme(weight_format, weight_quant_scheme)
         if activation_quant_format is None:
-            activation_format: QuantFormat = "fp8_e4m3fn" if act_quant == "per_token" else "none"
+            activation_format: QuantFormat = "int8" if act_quant == "per_token" else "none"
         else:
             activation_format = validate_quant_format(activation_quant_format)
         if act_quant == "none" and activation_format != "none":
@@ -52,6 +56,7 @@ class BaselineFakeQuantLinear(nn.Module):
         self.out_features = linear.out_features
         self.act_quant = act_quant
         self.weight_quant_format = weight_format
+        self.weight_quant_scheme = weight_scheme
         self.activation_quant_format = activation_format
         # Retained for legacy FP8 callers and archived decode-A16 support.
         self.qmax = (
@@ -65,6 +70,7 @@ class BaselineFakeQuantLinear(nn.Module):
             weight_qdq = weight_per_output_channel_qdq_forward(
                 linear.weight.detach(),
                 quant_format=self.weight_quant_format,
+                quant_scheme=self.weight_quant_scheme,
                 eps=self.eps,
                 fp8_qmax=float(qmax),
             )
@@ -77,33 +83,36 @@ class BaselineFakeQuantLinear(nn.Module):
     def forward_prepared(self, x: torch.Tensor) -> torch.Tensor:
         return F.linear(x, self.weight_qdq, self.bias)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def quantize_activation(self, x: torch.Tensor) -> torch.Tensor:
         if self.act_quant == "per_token":
-            x = activation_per_token_qdq_by_format(
+            return activation_per_token_qdq_by_format(
                 x,
                 quant_format=self.activation_quant_format,
                 eps=self.eps,
                 fp8_qmax=self.qmax,
             )
-        return self.forward_prepared(x)
+        return x
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.forward_prepared(self.quantize_activation(x))
 
     def extra_repr(self) -> str:
         return (
             f"in_features={self.in_features}, out_features={self.out_features}, "
             f"weight_quant_format={self.weight_quant_format}, "
+            f"weight_quant_scheme={self.weight_quant_scheme}, "
             f"activation_quant_format={self.activation_quant_format}, "
             f"act_quant={self.act_quant}"
         )
 
 
 class OmniQuantFakeQuantLinear(BaselineFakeQuantLinear):
-    """Inference wrapper holding a weight QDQ tensor learned by OmniQuant.
+    """Inference wrapper holding a static OmniQuant weight-QDQ tensor.
 
     Unlike :class:`BaselineFakeQuantLinear`, this class must not recompute its
     weight quantization from absmax: ``weight_qdq`` already contains the
-    learned symmetric-LWC result after LET has been folded into the weight.
-    It intentionally subclasses the baseline wrapper so the existing shared
-    input activation-QDQ path can use it without a separate attention patch.
+    learned LWC result after LET has been folded into the weight. It subclasses
+    the baseline wrapper so shared input activation QDQ can reuse it.
     """
 
     def __init__(
@@ -143,14 +152,22 @@ class OmniQuantFakeQuantLinear(BaselineFakeQuantLinear):
         self.register_buffer("weight_qdq", weight_qdq.detach().clone(), persistent=True)
         self.register_buffer("bias", None if bias is None else bias.detach().clone(), persistent=True)
 
+    def extra_repr(self) -> str:
+        return (
+            f"in_features={self.in_features}, out_features={self.out_features}, "
+            f"weight_quant_format={self.weight_quant_format}, "
+            f"activation_quant_format={self.activation_quant_format}, "
+            f"act_quant={self.act_quant}"
+        )
+
 
 class SmoothQuantFakeQuantLinear(nn.Module):
-    """Fixed SmoothQuant W8A8 fake-quant Linear wrapper.
+    """Fixed SmoothQuant fake-QDQ Linear wrapper.
 
     If ``input_scale`` is present, forward uses x / scale before activation
     quantization. If SmoothQuant folding has already moved the scale into the
     previous module, ``input_scale`` is None and the wrapper behaves like a
-    normal W8A8 wrapper using the already-smoothed weight.
+    normal fake-QDQ wrapper using the already-smoothed weight.
     """
 
     def __init__(
@@ -162,19 +179,39 @@ class SmoothQuantFakeQuantLinear(nn.Module):
         input_scale: torch.Tensor | None = None,
         qmax: float = FP8_MAX,
         eps: float = 1e-12,
+        weight_quant_format: QuantFormat = "fp8_e4m3fn",
+        activation_quant_format: QuantFormat | None = None,
     ) -> None:
         super().__init__()
         if act_quant not in ("none", "per_token"):
             raise ValueError(f"Unsupported act_quant: {act_quant}")
+        weight_format = validate_quant_format(weight_quant_format)
+        activation_format = validate_quant_format(
+            activation_quant_format
+            if activation_quant_format is not None
+            else ("fp8_e4m3fn" if act_quant == "per_token" else "none")
+        )
+        if act_quant == "none" and activation_format != "none":
+            raise ValueError("activation_quant_format must be 'none' when act_quant='none'.")
+        if act_quant == "per_token" and activation_format == "none":
+            raise ValueError("activation_quant_format='none' requires act_quant='none'.")
         if weight_qdq.ndim != 2:
             raise ValueError(f"Expected 2D Linear weight, got shape {tuple(weight_qdq.shape)}")
 
         self.in_features = int(weight_qdq.shape[1])
         self.out_features = int(weight_qdq.shape[0])
         self.act_quant = act_quant
-        self.weight_quant_format: QuantFormat = "fp8_e4m3fn"
-        self.activation_quant_format: QuantFormat = "fp8_e4m3fn" if act_quant == "per_token" else "none"
-        self.qmax = float(qmax)
+        self.weight_quant_format = weight_format
+        self.activation_quant_format = activation_format
+        self.qmax = (
+            float(qmax)
+            if activation_format == "fp8_e4m3fn"
+            else (
+                quant_format_qmax(activation_format)
+                if activation_format != "none"
+                else float(qmax)
+            )
+        )
         self.eps = float(eps)
         self.register_buffer("weight_qdq", weight_qdq.detach().clone(), persistent=True)
         if bias is None:
@@ -214,6 +251,8 @@ class SmoothQuantFakeQuantLinear(nn.Module):
     def extra_repr(self) -> str:
         return (
             f"in_features={self.in_features}, out_features={self.out_features}, "
+            f"weight_quant_format={self.weight_quant_format}, "
+            f"activation_quant_format={self.activation_quant_format}, "
             f"act_quant={self.act_quant}, folded={self.input_scale is None}, qmax={self.qmax}"
         )
 

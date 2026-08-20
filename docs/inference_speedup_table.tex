@@ -1,0 +1,27 @@
+% Required packages:
+% \usepackage{booktabs}
+% \usepackage{graphicx}
+
+\begin{table*}[t]
+\centering
+\caption{Projected end-to-end inference speedup under different quantization configurations.}
+\label{tab:inference_speedup}
+\resizebox{0.88\textwidth}{!}{%
+\begin{tabular}{ccccc}
+\toprule
+Model & W16A16 & W8A8 & W4A8 & W6A6 \\
+\midrule
+\textit{OpenOneRec-1.7B} & 1.00$\times$ & & & \\
+\textit{OpenOneRec-8B}   & 1.00$\times$ & & & \\
+\bottomrule
+\end{tabular}%
+}
+
+\vspace{0.4em}
+\begin{minipage}{0.86\textwidth}
+\footnotesize
+Speedup is normalized to the W16A16 baseline.
+W8A8 can be projected from shape-matched FP8 operator benchmarks.
+W4A8 and W6A6 require backend-specific kernels and remain unspecified.
+\end{minipage}
+\end{table*}

@@ -3,7 +3,7 @@
 This module intentionally does not provide a low-bit GEMM.  It replaces
 eligible ``nn.Linear`` modules with QDQ wrappers and then evaluates the model
 through ordinary model-dtype ``F.linear`` calls.  It is therefore appropriate
-for quality comparisons across mixed INT4/INT8/FP8 formats.
+for quality comparisons across mixed FP4/FP8 and INT4/INT6/INT8 formats.
 """
 
 from __future__ import annotations
@@ -14,7 +14,13 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from .apply import apply_baseline_qdq
-from .quant import ActQuantMode, QuantFormat, validate_quant_format
+from .quant import (
+    ActQuantMode,
+    QuantFormat,
+    WeightQuantScheme,
+    resolve_weight_quant_scheme,
+    validate_quant_format,
+)
 
 
 def _dtype_from_name(name: str) -> torch.dtype:
@@ -31,12 +37,14 @@ def load_fake_qdq_causal_lm(
     device: str,
     dtype: str = "bfloat16",
     trust_remote_code: bool = True,
-    weight_quant_format: QuantFormat = "fp8_e4m3fn",
-    activation_quant_format: QuantFormat = "fp8_e4m3fn",
+    weight_quant_format: QuantFormat = "int8",
+    weight_quant_scheme: WeightQuantScheme | None = None,
+    activation_quant_format: QuantFormat = "int8",
     activation_quant_mode: ActQuantMode = "shared_input",
 ) -> tuple[Any, Any, dict[str, Any]]:
     """Load an HF causal LM and apply the baseline composable fake-QDQ path."""
     weight_format = validate_quant_format(weight_quant_format)
+    weight_scheme = resolve_weight_quant_scheme(weight_format, weight_quant_scheme)
     activation_format = validate_quant_format(activation_quant_format)
     effective_act_mode: ActQuantMode = (
         "per_linear" if activation_format == "none" else activation_quant_mode
@@ -53,12 +61,14 @@ def load_fake_qdq_causal_lm(
     summary = apply_baseline_qdq(
         model,
         weight_quant_format=weight_format,
+        weight_quant_scheme=weight_scheme,
         activation_quant_format=activation_format,
         act_quant_mode=effective_act_mode,
     )
     return model, tokenizer, {
         "mode": "fake_qdq",
         "weight_quant_format": weight_format,
+        "weight_quant_scheme": weight_scheme,
         "activation_quant_format": activation_format,
         "activation_quant_mode": effective_act_mode,
         "execution": "fake_qdq_then_f_linear_in_model_dtype",

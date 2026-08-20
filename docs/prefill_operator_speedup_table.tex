@@ -1,0 +1,30 @@
+% Required packages:
+% \usepackage{booktabs}
+% \usepackage{graphicx}
+
+\begin{table*}[t]
+\centering
+\caption{Prefill operator speedup across representative projection shapes.}
+\label{tab:prefill_operator_speedup}
+\resizebox{0.78\textwidth}{!}{%
+\begin{tabular}{cccc}
+\toprule
+Shape ($IC \times OC$) & W8A8 & W4A8 & W6A6 \\
+\midrule
+$4096 \times 4096$   & & & \\
+$4096 \times 1024$   & & & \\
+$4096 \times 12288$  & & & \\
+$12288 \times 4096$  & & & \\
+\bottomrule
+\end{tabular}%
+}
+
+\vspace{0.4em}
+\begin{minipage}{0.76\textwidth}
+\footnotesize
+$M=B\times L$ is fixed across all operator benchmarks.
+Speedup is normalized to the corresponding W16A16 operator.
+Each row represents a unique projection shape appearing in OpenOneRec-8B.
+Operator latency includes input quantization, low-bit matrix multiplication, scaling, and output conversion.
+\end{minipage}
+\end{table*}

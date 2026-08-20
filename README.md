@@ -71,17 +71,32 @@ python -m fake_quant.run_m1_onerec_ad \
   --model_path artifacts/models/1.7B \
   --task ad \
   --weight_quant_format int4 \
-  --activation_quant_format fp8_e4m3fn \
+  --activation_quant_format int8 \
   --device cuda:7 \
-  --output_dir artifacts/results/fake_quant/recommender/int4w_fp8a_ad_1p7b \
+  --output_dir artifacts/results/fake_quant/recommender/int4w_int8a_ad_1p7b \
   --evaluate
 ```
 
-Use `--mode baseline_qdq` for mixed-format studies. For example,
-`--weight_quant_format int4 --activation_quant_format none` is INT4-W / BF16-A
-and `--weight_quant_format int4 --activation_quant_format fp8_e4m3fn` is
-INT4-W / FP8-A. `baseline_w8a8`, `smoothquant_w8a8`, and `gptq_fp8_w8a8` are
-retained FP8-only compatibility modes.
+The primary fake-QDQ protocol uses integer weights and integer activations.
+The runner defaults to `baseline_qdq` with asymmetric INT8-W and dynamic
+per-token symmetric INT8-A. For example, INT4-W/INT8-A needs only
+`--weight_quant_format int4`. Weight-only and FP8 combinations remain
+available as explicitly requested ablations. `baseline_w8a8`,
+`smoothquant_w8a8`, and `gptq_fp8_w8a8` are retained FP8 compatibility
+modes and should specify FP8 formats explicitly.
+
+Integer weights use per-output-channel asymmetric affine QDQ with a zero point
+by default. This default is shared by RTN and OmniQuant. Use
+`--weight_quant_scheme symmetric` only for an explicitly zero-centered
+integer control. FP8 E4M3FN remains symmetric because it has no affine integer
+zero point. The legacy `--omni_weight_quant_scheme` option is retained as an
+alias for `--weight_quant_scheme`.
+
+All fake-quant baselines use one deployment-matched numerical contract:
+master weights, quantization parameters, QDQ arithmetic, and calibration
+losses stay FP32; QDQ outputs are cast back to the model dtype before model
+operators execute. OmniQuant checkpoints produced by the former FP32-surrogate
+calibration path are intentionally rejected and must be recalibrated.
 
 ## Result conventions
 
