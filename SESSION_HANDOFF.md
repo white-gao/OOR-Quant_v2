@@ -1,6 +1,6 @@
 # OOR-Quant 会话迁移说明
 
-更新日期：2026-07-30。本文件记录当前研究主线、有效结果、代码状态与下一步
+更新日期：2026-08-24。本文件记录当前研究主线、有效结果、代码状态与下一步
 实验，供新会话直接接手。数值以 `artifacts/results/` 中的最终结果为准。
 
 ## 研究目标
@@ -33,10 +33,15 @@ docs/              研究表格与保留的 probe 总结
 artifacts/                  模型、数据、结果和探测归档（Git 忽略）
 ```
 
-实验 launcher 只保留在 `scripts/` 下。测试套件、pytest 配置、缓存、重复脚本、
-decode-A16 fake-quant ablation 和一次性 profile/分布探测代码已删除。当前没有
-可运行的 pytest suite；修改后至少应做核心模块 import、CLI smoke test 和小样本
-实验。缓存目录可以随时删除。
+实验 launcher 只保留在 `scripts/` 下。重复脚本、decode-A16 fake-quant
+ablation 和已完成的一次性 probe 可以继续清理。当前 `tests/` 下有 unittest
+suite；修改 fake-quant 核心后至少执行：
+
+```bash
+/home/yhhuang/miniconda3/envs/benchmark2/bin/python -m unittest discover -s tests
+```
+
+缓存目录可以随时删除。
 
 清理补充（2026-08-18）：主代码只保留 OmniQuant 的逐层 MSE 与最后一层
 ABC-LFQ；实验效果不佳的 LFQ-ALL、Beam-KL 训练目标、低秩补偿分支和一次性
@@ -142,6 +147,49 @@ MSE。当前包含：
 与 OmniQuant 的 SQ-init 共用 alpha=0.4，该值由 AD calibration block MSE
 搜索得到。
 
+### ABC-LFQ top-K boundary 排序增强（2026-08-24）
+
+当前 ABC-LFQ 保留 SID-A/B/C 三个 slot 内的 teacher-soft CE，并新增了
+一个可选的 teacher-only top-K boundary gap loss。它用 FP teacher 的 ranks
+1–K 作为正候选，紧随其后的 N 个 token 作为边界负候选，通过 weighted
+SmoothL1 对齐跨边界 logit gap。teacher gap 不大于 tie threshold 的 pair
+不训练，避免强行排序高熵平坦区域中的近似并列 token。
+
+总目标为：
+
+```text
+L_total = lfq_loss_weight * L_ABC_CE
+        + lfq_boundary_loss_weight * L_boundary
+```
+
+新增 CLI：
+
+```text
+--omni_lfq_boundary_loss_weight       默认 0
+--omni_lfq_boundary_topk              默认 32
+--omni_lfq_boundary_negative_count    默认 32
+--omni_lfq_boundary_tie_threshold     默认 0.01
+--omni_lfq_boundary_gap_scale         默认 1.0
+```
+
+boundary weight 为 0 时不构建 top-64 target，行为回退到原 ABC-LFQ。
+checkpoint、epoch log 和 `omniquant_config.json` 会保存总 boundary loss 以及
+A/B/C 分 slot 诊断。该实现只保护 teacher top-32 与 ranks 33–64 的边界，
+暂不做 student intruder mining，也不强制 top-32 内部的全排序。详细定义见
+`docs/ABC_LFQ_METHOD.md`。
+
+实现文件：
+
+```text
+fake_quant/omniquant/runtime.py
+fake_quant/run_m1_onerec_ad.py
+tests/test_fake_quant_deployment_matched.py
+```
+
+已验证：核心文件 `py_compile` 通过，`python -m unittest discover -s tests`
+18/18 通过；小型端到端训练测试能产生非空 train/validation boundary 诊断。
+尚未进行真实模型 calibration 或推荐测评。
+
 ### Asymmetric LWC 的当前实现
 
 `--weight_quant_scheme` 支持：
@@ -212,38 +260,26 @@ W_qdq = (Q - zero_point) * scale
 INT4-W/BF16-A 27.22；GSM8K 从 67.17% 降到 INT4-W/FP8-A 47.99%。因此低比特
 并非只损害推荐任务，但推荐 SID 指标对 naive INT4 的崩塌尤其明显。
 
-## 当前下一步
+## 当前下一步（2026-08-24）
 
-最优先实验是 LWC-only、asymmetric INT4-W/BF16-A，在同一 AD-3000 协议下与
-旧 symmetric LWC 结果比较。命令：
+旧 INT4-W/INT8-A ABC-LFQ 实验表明：在旧数值路径下，最后一层的
+calibration 从 128 增加到 512/1024，并给予足够 epoch 时，AD-full
+推荐指标整体改善。但这些 checkpoint 早于当前 deployment-matched
+训练语义，只能作为历史趋势，不能与新 boundary loss 做严格对照。
 
-```bash
-python -m fake_quant.run_m1_onerec_ad \
-  --task ad \
-  --mode omniquant \
-  --model_path artifacts/models/1.7B \
-  --weight_quant_format int4 \
-  --activation_quant_format none \
-  --omni_weight_quant_scheme asymmetric \
-  --omni_let_mode none \
-  --calib_sample_size 128 \
-  --eval_sample_size 3000 \
-  --device cuda:7 \
-  --output_dir artifacts/results/fake_quant/omniquant_asym_lwc_w4a16_ad3000 \
-  --evaluate \
-  --overwrite
-```
+下一轮不重跑旧 INT sweep，而在当前代码下新建 FP W4A8 受控对比：
 
-比较基线：
+1. 重新训练 FP4-E2M1-W/FP8-E4M3-A 的 LWC-only prefix；
+2. 从同一 prefix 和最后一层初始点分出原 ABC-LFQ 与
+   `ABC-LFQ + boundary` 两组；
+3. 两组使用同一 calibration/validation 划分、epoch、seed 与 slot 权重；
+4. 先在独立 512 条样本上检查 ABC KL/CE、teacher top-32 保留率与越界率，
+   再进入 AD-3000，只在两者都正向时跑 AD-full；
+5. FP W4A8 成立后再迁移至 FP W8A8，检查高精度场景是否也有收益。
 
-```text
-artifacts/results/fake_quant/omniquant_w4a16_ad3000_v2
-```
-
-该旧结果中所有层的训练后 loss 都低于初始化 loss，因此旧自动回退实际上没有
-触发；新实验与它的主要有效差异应是 asymmetric 双边 clipping。先完成这一
-对比，再决定是否继续修正 LET。不要同时改变 activation 格式、LET、epoch、
-calibration 样本或评测子集。
+FP LWC 是 symmetric 单截断参数，可调空间小于旧 INT asymmetric
+双边 LWC。若 boundary proxy 能改善而推荐指标不变，应优先怀疑最后一层
+参数空间不足；若 proxy 本身也无法改善，再检查 loss 定义和系数尺度。
 
 ## 接手检查清单
 

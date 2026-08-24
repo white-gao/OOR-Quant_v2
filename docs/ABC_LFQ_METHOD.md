@@ -141,9 +141,61 @@ w_a=w_b=w_c=\frac{1}{3}.
 - hidden-state MSE；
 - full-vocabulary CE；
 - beam-path KL；
-- top-k 排序或 margin loss。
+- top-k 排序或 margin loss（基础 ABC-CE 本身不包含；下面的可选 boundary 项开启后才会加入）。
 
 训练日志中的 MSE 只是优化前后的诊断量，不参与反向传播。
+
+### 5.1 可选的 tie-aware Top-K boundary loss
+
+第一版排序增强保持 ABC-CE 不变，只增加一个 teacher-only 的跨边界 gap 对齐项。正/负候选划分受 [RankDistil](https://proceedings.mlr.press/v130/reddi21a.html) 启发，但 weighted SmoothL1 gap matching、tie 过滤和 ABC 联合目标是本仓库针对高熵 SID 分布的改造，并非 RankDistil 原损失的直接复现。该项默认关闭，因此旧实验和旧 checkpoint 的行为不变。
+
+对每个 SID slot，按全精度 teacher logits 排序并构造：
+
+```text
+P = teacher ranks 1:K
+N = teacher ranks K+1:K+N
+
+默认 K=32，N=32。
+```
+
+对于正候选 i 和负候选 j：
+
+```text
+teacher_gap = teacher_logit[i] - teacher_logit[j]
+student_gap = student_logit[i] - student_logit[j]
+```
+
+若 `teacher_gap <= tie_threshold`，该 pair 权重为 0；否则：
+
+```text
+pair_weight = min(teacher_gap / gap_scale, 1)
+pair_loss   = pair_weight * SmoothL1(student_gap, teacher_gap)
+```
+
+每条样本、每个 slot 的 boundary loss 使用有效 pair 权重之和归一化，三个 slot 继续复用 ABC-CE 的 A/B/C 权重。联合目标为：
+
+```text
+L_total = lfq_loss_weight * L_ABC_CE
+        + boundary_loss_weight * L_boundary
+```
+
+当前第一版有意不包含：
+
+- student top-K intruder hard-negative mining；
+- teacher top-K 内部的完整排序；
+- beam path 或 sequence-level 排序。
+
+这样第一轮实验只能归因于“保护 FP top-32 与 ranks 33–64 的边界是否有效”。默认参数接口为：
+
+| 参数 | 默认值 | 含义 |
+|---|---:|---|
+| `--omni_lfq_boundary_loss_weight` | 0 | boundary 项系数；0 完全回退 ABC-CE |
+| `--omni_lfq_boundary_topk` | 32 | teacher 正候选数 |
+| `--omni_lfq_boundary_negative_count` | 32 | 紧随 top-K 的 teacher 负候选数 |
+| `--omni_lfq_boundary_tie_threshold` | 0.01 | 小于等于该 teacher logit gap 的 pair 不训练 |
+| `--omni_lfq_boundary_gap_scale` | 1.0 | pair 权重饱和到 1 的 teacher gap |
+
+训练和 checkpoint 日志会分别保存混合总 loss、ABC slot CE、boundary 总 loss、A/B/C boundary 分项以及诊断 MSE。
 
 ## 6. 优化哪些参数
 

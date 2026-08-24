@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import unittest
 from pathlib import Path
 
@@ -15,9 +16,12 @@ from fake_quant.omniquant.runtime import (
     _LFQOutputProjector,
     _TrainableOmniBlock,
     _TrainableSymmetricLinear,
+    _build_lfq_boundary_targets,
     _finalize_block,
     _first_tensor,
+    _lfq_boundary_loss,
     _lfq_soft_cross_entropy,
+    _train_block,
     _validate_omniquant_checkpoint,
 )
 from fake_quant.quant import FAKE_QUANT_FORWARD_MODE
@@ -198,6 +202,128 @@ class DeploymentMatchedFakeQuantTest(unittest.TestCase):
         )
         self.assertEqual(loss.dtype, torch.float32)
         self.assertTrue(all(value.dtype == torch.float32 for value in slot_losses.values()))
+
+    def test_lfq_boundary_loss_matches_only_reliable_teacher_gaps(self) -> None:
+        teacher = torch.tensor([[4.0, 3.0, 2.0, 1.0, 0.0, -1.0]])
+        teacher_logits = {slot: teacher.clone() for slot in ("a", "b", "c")}
+        targets = _build_lfq_boundary_targets(
+            teacher_logits,
+            topk=2,
+            negative_count=2,
+            tie_threshold=1e-2,
+            gap_scale=1.0,
+        )
+        slot_weights = {"a": 1.0 / 3.0, "b": 1.0 / 3.0, "c": 1.0 / 3.0}
+
+        matched_logits = {
+            slot: teacher.clone().requires_grad_(True)
+            for slot in ("a", "b", "c")
+        }
+        matched_loss, matched_slot_losses = _lfq_boundary_loss(
+            matched_logits,
+            targets,
+            slot_weights,
+        )
+        torch.testing.assert_close(matched_loss, torch.tensor(0.0))
+        self.assertTrue(
+            all(
+                float(slot_loss.detach()) == 0.0
+                for slot_loss in matched_slot_losses.values()
+            )
+        )
+
+        corrupted = torch.tensor([[4.0, 1.0, 3.0, 2.0, 0.0, -1.0]])
+        corrupted_logits = {
+            slot: corrupted.clone().requires_grad_(True)
+            for slot in ("a", "b", "c")
+        }
+        corrupted_loss, _ = _lfq_boundary_loss(
+            corrupted_logits,
+            targets,
+            slot_weights,
+        )
+        self.assertGreater(float(corrupted_loss.detach()), 0.0)
+        corrupted_loss.backward()
+        self.assertTrue(
+            all(logits.grad is not None for logits in corrupted_logits.values())
+        )
+
+        tied_teacher = {
+            slot: torch.ones(1, 4) for slot in ("a", "b", "c")
+        }
+        tied_targets = _build_lfq_boundary_targets(
+            tied_teacher,
+            topk=2,
+            negative_count=2,
+            tie_threshold=1e-2,
+            gap_scale=1.0,
+        )
+        arbitrary_logits = {
+            slot: torch.randn(1, 4, requires_grad=True)
+            for slot in ("a", "b", "c")
+        }
+        tied_loss, _ = _lfq_boundary_loss(
+            arbitrary_logits,
+            tied_targets,
+            slot_weights,
+        )
+        torch.testing.assert_close(tied_loss, torch.tensor(0.0))
+        tied_loss.backward()
+        self.assertTrue(
+            all(
+                logits.grad is not None and torch.count_nonzero(logits.grad) == 0
+                for logits in arbitrary_logits.values()
+            )
+        )
+
+    def test_lfq_boundary_full_training_path(self) -> None:
+        teacher_block = _TinyDecoderBlock().to(dtype=torch.bfloat16)
+        config = OmniQuantConfig(
+            weight_quant_format="int4",
+            activation_quant_format="int8",
+            weight_quant_scheme="asymmetric",
+            use_lwc=True,
+            use_let=False,
+            learn_let=False,
+            final_objective="lfq_ce",
+            lfq_boundary_loss_weight=0.1,
+            lfq_boundary_topk=2,
+            lfq_boundary_negative_count=2,
+            epochs=1,
+            validation_sample_size=1,
+        )
+        train_block = _TrainableOmniBlock(
+            copy.deepcopy(teacher_block),
+            config=config,
+            init_scales={},
+        )
+        projector = _LFQOutputProjector(
+            final_norm=_TinyRMSNorm(8).to(dtype=torch.bfloat16),
+            output_head=nn.Linear(8, 12, bias=False).to(dtype=torch.bfloat16),
+            token_ids={"a": (0, 1, 2, 3), "b": (4, 5, 6, 7), "c": (8, 9, 10, 11)},
+        )
+        batches = [
+            torch.randn(1, 5, 8, dtype=torch.bfloat16),
+            torch.randn(1, 5, 8, dtype=torch.bfloat16),
+        ]
+        result = _train_block(
+            teacher_block=teacher_block,
+            train_block=train_block,
+            fp_inputs=batches,
+            quant_inputs=[batch.clone() for batch in batches],
+            config=config,
+            lfq_projector=projector,
+            layer_idx=0,
+        )
+        self.assertEqual(len(result), 12)
+        self.assertIsNotNone(result[4])
+        self.assertIsNotNone(result[5])
+        self.assertEqual(set(result[6]), {"a", "b", "c"})
+        self.assertEqual(set(result[7]), {"a", "b", "c"})
+        epoch_metrics = result[-1]
+        self.assertEqual(len(epoch_metrics), 2)
+        self.assertIsNotNone(epoch_metrics[-1].train_lfq_boundary_loss)
+        self.assertIsNotNone(epoch_metrics[-1].validation_lfq_boundary_loss)
 
     def test_legacy_fp32_surrogate_checkpoint_is_rejected(self) -> None:
         config = _config(use_let=False)

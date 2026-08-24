@@ -271,6 +271,39 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--omni_lfq_boundary_loss_weight",
+        type=float,
+        default=0.0,
+        help=(
+            "Weight of the tie-aware FP top-K versus next-N boundary gap loss. "
+            "Zero preserves the original ABC-LFQ objective."
+        ),
+    )
+    parser.add_argument(
+        "--omni_lfq_boundary_topk",
+        type=int,
+        default=32,
+        help="Number of FP top-ranked SID tokens treated as boundary positives.",
+    )
+    parser.add_argument(
+        "--omni_lfq_boundary_negative_count",
+        type=int,
+        default=32,
+        help="Number of FP tokens immediately below top-K used as negatives.",
+    )
+    parser.add_argument(
+        "--omni_lfq_boundary_tie_threshold",
+        type=float,
+        default=1e-2,
+        help="Ignore teacher positive/negative logit gaps at or below this value.",
+    )
+    parser.add_argument(
+        "--omni_lfq_boundary_gap_scale",
+        type=float,
+        default=1.0,
+        help="Teacher logit gap at which a boundary pair reaches unit weight.",
+    )
+    parser.add_argument(
         "--omni_epochs",
         type=int,
         default=DEFAULT_OMNIQUANT_EPOCHS,
@@ -1296,6 +1329,24 @@ def summaries_to_jsonable(summaries: Mapping[int, Any]) -> dict[str, Any]:
             if lfq_slot_weights is not None:
                 item["lfq_slot_weights"] = list(lfq_slot_weights)
                 item["lfq_loss_weight"] = getattr(summary, "lfq_loss_weight", 1.0)
+                item["lfq_boundary_loss_weight"] = getattr(
+                    summary, "lfq_boundary_loss_weight", 0.0
+                )
+            initial_boundary_loss = getattr(
+                summary, "initial_lfq_boundary_loss", None
+            )
+            final_boundary_loss = getattr(
+                summary, "final_lfq_boundary_loss", None
+            )
+            if initial_boundary_loss is not None and final_boundary_loss is not None:
+                item["initial_lfq_boundary_loss"] = initial_boundary_loss
+                item["final_lfq_boundary_loss"] = final_boundary_loss
+                item["initial_lfq_boundary_slot_losses"] = dict(
+                    getattr(summary, "initial_lfq_boundary_slot_losses", ())
+                )
+                item["final_lfq_boundary_slot_losses"] = dict(
+                    getattr(summary, "final_lfq_boundary_slot_losses", ())
+                )
             initial_mse_loss = getattr(summary, "initial_mse_loss", None)
             final_mse_loss = getattr(summary, "final_mse_loss", None)
             if initial_mse_loss is not None and final_mse_loss is not None:
@@ -1314,6 +1365,12 @@ def summaries_to_jsonable(summaries: Mapping[int, Any]) -> dict[str, Any]:
                         "max_grad_norm": metric.max_grad_norm,
                         "eval_loss": metric.eval_loss,
                         "eval_mse_loss": metric.eval_mse_loss,
+                        "train_lfq_boundary_loss": (
+                            metric.train_lfq_boundary_loss
+                        ),
+                        "validation_lfq_boundary_loss": (
+                            metric.validation_lfq_boundary_loss
+                        ),
                         "validation_loss": metric.validation_loss,
                         "validation_lfq_slot_losses": dict(
                             metric.validation_lfq_slot_losses
@@ -1340,6 +1397,11 @@ def build_omniquant_config(args: argparse.Namespace) -> OmniQuantConfig:
         lfq_vocab_scope=args.omni_lfq_vocab_scope,
         lfq_slot_weights=tuple(args.omni_lfq_slot_weights),
         lfq_loss_weight=args.omni_lfq_loss_weight,
+        lfq_boundary_loss_weight=args.omni_lfq_boundary_loss_weight,
+        lfq_boundary_topk=args.omni_lfq_boundary_topk,
+        lfq_boundary_negative_count=args.omni_lfq_boundary_negative_count,
+        lfq_boundary_tie_threshold=args.omni_lfq_boundary_tie_threshold,
+        lfq_boundary_gap_scale=args.omni_lfq_boundary_gap_scale,
         epochs=args.omni_epochs,
         validation_sample_size=args.omni_validation_sample_size,
         train_sample_size=args.omni_train_sample_size,
@@ -1645,6 +1707,15 @@ def main() -> None:
         "omni_lfq_vocab_scope": args.omni_lfq_vocab_scope,
         "omni_lfq_slot_weights": list(args.omni_lfq_slot_weights),
         "omni_lfq_loss_weight": args.omni_lfq_loss_weight,
+        "omni_lfq_boundary_loss_weight": args.omni_lfq_boundary_loss_weight,
+        "omni_lfq_boundary_topk": args.omni_lfq_boundary_topk,
+        "omni_lfq_boundary_negative_count": (
+            args.omni_lfq_boundary_negative_count
+        ),
+        "omni_lfq_boundary_tie_threshold": (
+            args.omni_lfq_boundary_tie_threshold
+        ),
+        "omni_lfq_boundary_gap_scale": args.omni_lfq_boundary_gap_scale,
         "omni_epochs": args.omni_epochs,
         "omni_validation_sample_size": args.omni_validation_sample_size,
         "omni_train_sample_size": args.omni_train_sample_size,

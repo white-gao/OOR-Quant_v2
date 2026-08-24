@@ -85,6 +85,13 @@ class OmniQuantConfig:
     lfq_vocab_scope: Literal["s_abc"] = "s_abc"
     lfq_slot_weights: tuple[float, float, float] = (1.0, 1.0, 1.0)
     lfq_loss_weight: float = 1.0
+    # Optional RankDistil-inspired teacher top-K boundary objective. A zero
+    # weight preserves the original ABC-LFQ objective exactly.
+    lfq_boundary_loss_weight: float = 0.0
+    lfq_boundary_topk: int = 32
+    lfq_boundary_negative_count: int = 32
+    lfq_boundary_tie_threshold: float = 1e-2
+    lfq_boundary_gap_scale: float = 1.0
     epochs: int = DEFAULT_OMNIQUANT_EPOCHS
     # Hold out the last N calibration samples for LFQ validation only. These
     # samples are forwarded every epoch but never participate in backprop.
@@ -142,6 +149,25 @@ class OmniQuantConfig:
             raise ValueError("lfq_loss_weight must be finite and non-negative.")
         if self.final_objective == "lfq_ce" and self.lfq_loss_weight == 0.0:
             raise ValueError("LFQ requires a positive lfq_loss_weight.")
+        if (
+            not math.isfinite(self.lfq_boundary_loss_weight)
+            or self.lfq_boundary_loss_weight < 0.0
+        ):
+            raise ValueError("lfq_boundary_loss_weight must be finite and non-negative.")
+        if self.lfq_boundary_topk <= 0:
+            raise ValueError("lfq_boundary_topk must be positive.")
+        if self.lfq_boundary_negative_count <= 0:
+            raise ValueError("lfq_boundary_negative_count must be positive.")
+        if (
+            not math.isfinite(self.lfq_boundary_tie_threshold)
+            or self.lfq_boundary_tie_threshold < 0.0
+        ):
+            raise ValueError("lfq_boundary_tie_threshold must be finite and non-negative.")
+        if (
+            not math.isfinite(self.lfq_boundary_gap_scale)
+            or self.lfq_boundary_gap_scale <= 0.0
+        ):
+            raise ValueError("lfq_boundary_gap_scale must be finite and positive.")
         if self.epochs <= 0:
             raise ValueError("omni_epochs must be positive.")
         if self.validation_sample_size < 0:
@@ -182,6 +208,8 @@ class OmniQuantEpochMetric:
     eval_mse_loss: float | None = None
     validation_loss: float | None = None
     validation_lfq_slot_losses: tuple[tuple[str, float], ...] = ()
+    train_lfq_boundary_loss: float | None = None
+    validation_lfq_boundary_loss: float | None = None
 
 
 @dataclass(frozen=True)
@@ -195,6 +223,11 @@ class OmniQuantSummary:
     final_lfq_slot_losses: tuple[tuple[str, float], ...] = ()
     lfq_slot_weights: tuple[float, float, float] | None = None
     lfq_loss_weight: float = 1.0
+    lfq_boundary_loss_weight: float = 0.0
+    initial_lfq_boundary_loss: float | None = None
+    final_lfq_boundary_loss: float | None = None
+    initial_lfq_boundary_slot_losses: tuple[tuple[str, float], ...] = ()
+    final_lfq_boundary_slot_losses: tuple[tuple[str, float], ...] = ()
     initial_mse_loss: float | None = None
     final_mse_loss: float | None = None
     best_epoch: int | None = None
@@ -846,6 +879,82 @@ def _normalized_lfq_slot_weights(config: OmniQuantConfig) -> dict[str, float]:
     }
 
 
+@dataclass(frozen=True)
+class _LFQBoundaryTarget:
+    """Compact teacher targets for cross-boundary top-K gap matching."""
+
+    positive_indices: torch.Tensor
+    negative_indices: torch.Tensor
+    teacher_gaps: torch.Tensor
+    pair_weights: torch.Tensor
+
+
+def _build_lfq_boundary_targets(
+    teacher_logits: Mapping[str, torch.Tensor],
+    *,
+    topk: int,
+    negative_count: int,
+    tie_threshold: float,
+    gap_scale: float,
+) -> dict[str, _LFQBoundaryTarget]:
+    """Select teacher ranks 1:K and K+1:K+N and cache reliable gaps."""
+    if set(teacher_logits) != set(LFQ_SLOT_NAMES):
+        raise ValueError("LFQ teacher logits must contain SID_a, SID_b, and SID_c.")
+    candidate_count = topk + negative_count
+    targets: dict[str, _LFQBoundaryTarget] = {}
+    for slot in LFQ_SLOT_NAMES:
+        logits = teacher_logits[slot].float()
+        if logits.shape[-1] < candidate_count:
+            raise ValueError(
+                f"LFQ SID_{slot} vocabulary has {logits.shape[-1]} tokens, but "
+                f"boundary loss requires at least {candidate_count}."
+            )
+        top = torch.topk(logits, k=candidate_count, dim=-1, sorted=True)
+        positive_indices = top.indices[..., :topk]
+        negative_indices = top.indices[..., topk:]
+        positive_scores = top.values[..., :topk]
+        negative_scores = top.values[..., topk:]
+        teacher_gaps = positive_scores.unsqueeze(-1) - negative_scores.unsqueeze(-2)
+        pair_weights = torch.where(
+            teacher_gaps > tie_threshold,
+            torch.clamp(teacher_gaps / gap_scale, max=1.0),
+            torch.zeros_like(teacher_gaps),
+        )
+        targets[slot] = _LFQBoundaryTarget(
+            positive_indices=positive_indices.detach().cpu(),
+            negative_indices=negative_indices.detach().cpu(),
+            teacher_gaps=teacher_gaps.detach().cpu(),
+            pair_weights=pair_weights.detach().cpu(),
+        )
+    return targets
+
+
+def _lfq_soft_cross_entropy_from_logits(
+    student_logits: Mapping[str, torch.Tensor],
+    teacher_probabilities: Mapping[str, torch.Tensor],
+    slot_weights: Mapping[str, float],
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    if set(teacher_probabilities) != set(LFQ_SLOT_NAMES):
+        raise ValueError("LFQ teacher probabilities must contain SID_a, SID_b, and SID_c.")
+    slot_losses: dict[str, torch.Tensor] = {}
+    for slot in LFQ_SLOT_NAMES:
+        student = student_logits[slot].float()
+        teacher = teacher_probabilities[slot].to(
+            device=student.device,
+            dtype=torch.float32,
+        )
+        if student.shape != teacher.shape:
+            raise ValueError(
+                f"LFQ SID_{slot} teacher/student logit shapes differ: "
+                f"{tuple(teacher.shape)} vs {tuple(student.shape)}."
+            )
+        slot_losses[slot] = -(
+            teacher * F.log_softmax(student, dim=-1)
+        ).sum(dim=-1).mean()
+    total_loss = sum(slot_weights[slot] * slot_losses[slot] for slot in LFQ_SLOT_NAMES)
+    return total_loss, slot_losses
+
+
 def _lfq_soft_cross_entropy(
     prediction: torch.Tensor,
     teacher_probabilities: Mapping[str, torch.Tensor],
@@ -855,22 +964,51 @@ def _lfq_soft_cross_entropy(
     student_logits = {
         slot: logits.float() for slot, logits in projector(prediction).items()
     }
-    if set(teacher_probabilities) != set(LFQ_SLOT_NAMES):
-        raise ValueError("LFQ teacher probabilities must contain SID_a, SID_b, and SID_c.")
+    return _lfq_soft_cross_entropy_from_logits(
+        student_logits,
+        teacher_probabilities,
+        slot_weights,
+    )
+
+
+def _lfq_boundary_loss(
+    student_logits: Mapping[str, torch.Tensor],
+    boundary_targets: Mapping[str, _LFQBoundaryTarget],
+    slot_weights: Mapping[str, float],
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    """Match reliable FP top-K-vs-tail logit gaps with weighted SmoothL1."""
+    if set(boundary_targets) != set(LFQ_SLOT_NAMES):
+        raise ValueError("LFQ boundary targets must contain SID_a, SID_b, and SID_c.")
     slot_losses: dict[str, torch.Tensor] = {}
     for slot in LFQ_SLOT_NAMES:
-        teacher = teacher_probabilities[slot].to(
-            device=student_logits[slot].device,
+        student = student_logits[slot].float()
+        target = boundary_targets[slot]
+        positive_indices = target.positive_indices.to(device=student.device)
+        negative_indices = target.negative_indices.to(device=student.device)
+        teacher_gaps = target.teacher_gaps.to(
+            device=student.device,
             dtype=torch.float32,
         )
-        if student_logits[slot].shape != teacher.shape:
+        pair_weights = target.pair_weights.to(
+            device=student.device,
+            dtype=torch.float32,
+        )
+        student_positive = torch.gather(student, dim=-1, index=positive_indices)
+        student_negative = torch.gather(student, dim=-1, index=negative_indices)
+        student_gaps = student_positive.unsqueeze(-1) - student_negative.unsqueeze(-2)
+        if student_gaps.shape != teacher_gaps.shape:
             raise ValueError(
-                f"LFQ SID_{slot} teacher/student logit shapes differ: "
-                f"{tuple(teacher.shape)} vs {tuple(student_logits[slot].shape)}."
+                f"LFQ SID_{slot} boundary gap shapes differ: "
+                f"{tuple(teacher_gaps.shape)} vs {tuple(student_gaps.shape)}."
             )
-        slot_losses[slot] = -(
-            teacher * F.log_softmax(student_logits[slot], dim=-1)
-        ).sum(dim=-1).mean()
+        pair_losses = F.smooth_l1_loss(
+            student_gaps,
+            teacher_gaps,
+            reduction="none",
+        )
+        weighted_sum = (pair_weights * pair_losses).sum(dim=(-2, -1))
+        weight_sum = pair_weights.sum(dim=(-2, -1)).clamp_min(1.0)
+        slot_losses[slot] = (weighted_sum / weight_sum).mean()
     total_loss = sum(slot_weights[slot] * slot_losses[slot] for slot in LFQ_SLOT_NAMES)
     return total_loss, slot_losses
 
@@ -889,6 +1027,10 @@ def _train_block(
 ) -> tuple[
     float,
     float,
+    dict[str, float],
+    dict[str, float],
+    float | None,
+    float | None,
     dict[str, float],
     dict[str, float],
     float,
@@ -947,15 +1089,19 @@ def _train_block(
     teacher_block.eval()
     train_block.eval()
     lfq_teacher_probabilities: list[dict[str, torch.Tensor]] | None = None
+    lfq_boundary_targets: list[dict[str, _LFQBoundaryTarget]] | None = None
     validation_lfq_teacher_probabilities: list[dict[str, torch.Tensor]] | None = None
+    validation_lfq_boundary_targets: list[dict[str, _LFQBoundaryTarget]] | None = None
     slot_weights = (
         _normalized_lfq_slot_weights(config)
         if lfq_projector is not None
         else {}
     )
+    use_boundary_loss = config.lfq_boundary_loss_weight > 0.0
     if lfq_projector is not None:
         lfq_projector.eval()
         lfq_teacher_probabilities = []
+        lfq_boundary_targets = [] if use_boundary_loss else None
         # Three 8192-way float32 distributions use about 12 MiB for 128 samples.
         with torch.no_grad():
             for fp_batch in fp_inputs:
@@ -964,13 +1110,27 @@ def _train_block(
                 fp_kwargs = _move_tree_to_device(fp_kwargs, device)
                 target = _first_tensor(teacher_block(*fp_args, **fp_kwargs))
                 projected = lfq_projector(target)
+                teacher_logits = {
+                    slot: projected[slot].float() for slot in LFQ_SLOT_NAMES
+                }
                 probabilities = {
-                    slot: F.softmax(projected[slot].float(), dim=-1).detach().cpu()
+                    slot: F.softmax(teacher_logits[slot], dim=-1).detach().cpu()
                     for slot in LFQ_SLOT_NAMES
                 }
                 lfq_teacher_probabilities.append(probabilities)
+                if lfq_boundary_targets is not None:
+                    lfq_boundary_targets.append(
+                        _build_lfq_boundary_targets(
+                            teacher_logits,
+                            topk=config.lfq_boundary_topk,
+                            negative_count=config.lfq_boundary_negative_count,
+                            tie_threshold=config.lfq_boundary_tie_threshold,
+                            gap_scale=config.lfq_boundary_gap_scale,
+                        )
+                    )
         if validation_fp_inputs:
             validation_lfq_teacher_probabilities = []
+            validation_lfq_boundary_targets = [] if use_boundary_loss else None
             with torch.no_grad():
                 for fp_batch in validation_fp_inputs:
                     fp_args, fp_kwargs = _batch_to_args_kwargs(fp_batch)
@@ -978,14 +1138,27 @@ def _train_block(
                     fp_kwargs = _move_tree_to_device(fp_kwargs, device)
                     target = _first_tensor(teacher_block(*fp_args, **fp_kwargs))
                     projected = lfq_projector(target)
+                    teacher_logits = {
+                        slot: projected[slot].float() for slot in LFQ_SLOT_NAMES
+                    }
                     validation_lfq_teacher_probabilities.append(
                         {
-                            slot: F.softmax(projected[slot].float(), dim=-1)
+                            slot: F.softmax(teacher_logits[slot], dim=-1)
                             .detach()
                             .cpu()
                             for slot in LFQ_SLOT_NAMES
                         }
                     )
+                    if validation_lfq_boundary_targets is not None:
+                        validation_lfq_boundary_targets.append(
+                            _build_lfq_boundary_targets(
+                                teacher_logits,
+                                topk=config.lfq_boundary_topk,
+                                negative_count=config.lfq_boundary_negative_count,
+                                tie_threshold=config.lfq_boundary_tie_threshold,
+                                gap_scale=config.lfq_boundary_gap_scale,
+                            )
+                        )
 
     def compute_batch_loss(
         batch_idx: int,
@@ -998,8 +1171,12 @@ def _train_block(
         torch.Tensor,
         dict[str, torch.Tensor],
         torch.Tensor | None,
+        dict[str, torch.Tensor],
+        torch.Tensor | None,
     ]:
         slot_losses: dict[str, torch.Tensor] = {}
+        boundary_loss: torch.Tensor | None = None
+        boundary_slot_losses: dict[str, torch.Tensor] = {}
         prediction: torch.Tensor | None = None
         mse_loss: torch.Tensor | None = None
         if lfq_teacher_probabilities is None:
@@ -1022,13 +1199,26 @@ def _train_block(
             quant_kwargs = _move_tree_to_device(quant_kwargs, device)
             prediction = _first_tensor(train_block(*quant_args, **quant_kwargs))
             assert lfq_projector is not None
-            base_loss, slot_losses = _lfq_soft_cross_entropy(
-                prediction,
+            student_logits = {
+                slot: logits.float()
+                for slot, logits in lfq_projector(prediction).items()
+            }
+            base_loss, slot_losses = _lfq_soft_cross_entropy_from_logits(
+                student_logits,
                 lfq_teacher_probabilities[batch_idx],
-                lfq_projector,
                 slot_weights,
             )
             total_loss = config.lfq_loss_weight * base_loss
+            if lfq_boundary_targets is not None:
+                boundary_loss, boundary_slot_losses = _lfq_boundary_loss(
+                    student_logits,
+                    lfq_boundary_targets[batch_idx],
+                    slot_weights,
+                )
+                total_loss = (
+                    total_loss
+                    + config.lfq_boundary_loss_weight * boundary_loss
+                )
 
             # Reconstruction MSE is diagnostic only for LFQ and is never added
             # to the loss used for backpropagation.
@@ -1040,12 +1230,20 @@ def _train_block(
                     target = _first_tensor(teacher_block(*fp_args, **fp_kwargs)).detach()
                 mse_loss = F.mse_loss(prediction.float(), target.float())
 
-        return total_loss, slot_losses, mse_loss
+        return (
+            total_loss,
+            slot_losses,
+            boundary_loss,
+            boundary_slot_losses,
+            mse_loss,
+        )
 
     def evaluate_parameters() -> tuple[
         float,
         dict[str, float],
         float,
+        float | None,
+        dict[str, float],
     ]:
         """Evaluate one fixed parameter state over the full calibration set."""
         was_training = train_block.training
@@ -1053,12 +1251,20 @@ def _train_block(
         total = 0.0
         count = 0
         slot_totals = {slot: 0.0 for slot in LFQ_SLOT_NAMES}
+        boundary_total = 0.0
+        boundary_slot_totals = {slot: 0.0 for slot in LFQ_SLOT_NAMES}
         mse_total = 0.0
         with torch.no_grad():
             for batch_idx, (fp_batch, quant_batch) in enumerate(
                 zip(fp_inputs, quant_inputs)
             ):
-                loss, slot_losses, mse_loss = compute_batch_loss(
+                (
+                    loss,
+                    slot_losses,
+                    boundary_loss,
+                    boundary_slot_losses,
+                    mse_loss,
+                ) = compute_batch_loss(
                     batch_idx,
                     fp_batch,
                     quant_batch,
@@ -1073,6 +1279,12 @@ def _train_block(
                 if lfq_teacher_probabilities is not None:
                     for slot in LFQ_SLOT_NAMES:
                         slot_totals[slot] += float(slot_losses[slot])
+                if boundary_loss is not None:
+                    boundary_total += float(boundary_loss)
+                    for slot in LFQ_SLOT_NAMES:
+                        boundary_slot_totals[slot] += float(
+                            boundary_slot_losses[slot]
+                        )
                 if mse_loss is None or not torch.isfinite(mse_loss):
                     raise FloatingPointError(
                         "Non-finite OmniQuant MSE during fixed-parameter evaluation."
@@ -1092,32 +1304,70 @@ def _train_block(
             total / max(1, count),
             evaluated_slot_losses,
             mse_total / max(1, count),
+            (
+                boundary_total / max(1, count)
+                if lfq_boundary_targets is not None
+                else None
+            ),
+            (
+                {
+                    slot: boundary_slot_totals[slot] / max(1, count)
+                    for slot in LFQ_SLOT_NAMES
+                }
+                if lfq_boundary_targets is not None
+                else {}
+            ),
         )
 
-    def evaluate_validation_parameters() -> tuple[float, dict[str, float]] | None:
+    def evaluate_validation_parameters() -> tuple[
+        float,
+        dict[str, float],
+        float | None,
+        dict[str, float],
+    ] | None:
         """Evaluate held-out LFQ samples without changing or selecting parameters."""
         if validation_lfq_teacher_probabilities is None:
             return None
+        boundary_total = 0.0
+        boundary_slot_totals = {slot: 0.0 for slot in LFQ_SLOT_NAMES}
         assert lfq_projector is not None
         was_training = train_block.training
         train_block.eval()
         total = 0.0
         slot_totals = {slot: 0.0 for slot in LFQ_SLOT_NAMES}
         with torch.no_grad():
-            for quant_batch, teacher_probabilities in zip(
-                validation_quant_inputs,
-                validation_lfq_teacher_probabilities,
+            for validation_idx, (quant_batch, teacher_probabilities) in enumerate(
+                zip(
+                    validation_quant_inputs,
+                    validation_lfq_teacher_probabilities,
+                )
             ):
                 quant_args, quant_kwargs = _batch_to_args_kwargs(quant_batch)
                 quant_args = _move_tree_to_device(quant_args, device)
                 quant_kwargs = _move_tree_to_device(quant_kwargs, device)
                 prediction = _first_tensor(train_block(*quant_args, **quant_kwargs))
-                loss, slot_losses = _lfq_soft_cross_entropy(
-                    prediction,
+                student_logits = {
+                    slot: logits.float()
+                    for slot, logits in lfq_projector(prediction).items()
+                }
+                base_loss, slot_losses = _lfq_soft_cross_entropy_from_logits(
+                    student_logits,
                     teacher_probabilities,
-                    lfq_projector,
                     slot_weights,
                 )
+                loss = config.lfq_loss_weight * base_loss
+                boundary_loss: torch.Tensor | None = None
+                boundary_slot_losses: dict[str, torch.Tensor] = {}
+                if validation_lfq_boundary_targets is not None:
+                    boundary_loss, boundary_slot_losses = _lfq_boundary_loss(
+                        student_logits,
+                        validation_lfq_boundary_targets[validation_idx],
+                        slot_weights,
+                    )
+                    loss = (
+                        loss
+                        + config.lfq_boundary_loss_weight * boundary_loss
+                    )
                 if not torch.isfinite(loss):
                     raise FloatingPointError(
                         "Non-finite held-out LFQ validation loss."
@@ -1125,6 +1375,12 @@ def _train_block(
                 total += float(loss)
                 for slot in LFQ_SLOT_NAMES:
                     slot_totals[slot] += float(slot_losses[slot])
+                if boundary_loss is not None:
+                    boundary_total += float(boundary_loss)
+                    for slot in LFQ_SLOT_NAMES:
+                        boundary_slot_totals[slot] += float(
+                            boundary_slot_losses[slot]
+                        )
         if was_training:
             train_block.train()
         count = len(validation_quant_inputs)
@@ -1134,11 +1390,30 @@ def _train_block(
                 slot: slot_totals[slot] / max(1, count)
                 for slot in LFQ_SLOT_NAMES
             },
+            (
+                boundary_total / max(1, count)
+                if validation_lfq_boundary_targets is not None
+                else None
+            ),
+            (
+                {
+                    slot: boundary_slot_totals[slot] / max(1, count)
+                    for slot in LFQ_SLOT_NAMES
+                }
+                if validation_lfq_boundary_targets is not None
+                else {}
+            ),
         )
 
     # Epoch zero is a fixed-state full-calibration measurement. It also gives
     # best-state tracking a safe fallback if every optimizer update is worse.
-    initial_loss, initial_slot_losses, initial_mse_loss = evaluate_parameters()
+    (
+        initial_loss,
+        initial_slot_losses,
+        initial_mse_loss,
+        initial_boundary_loss,
+        initial_boundary_slot_losses,
+    ) = evaluate_parameters()
     initial_validation = evaluate_validation_parameters()
     epoch_metrics: list[OmniQuantEpochMetric] = [
         OmniQuantEpochMetric(
@@ -1148,6 +1423,10 @@ def _train_block(
             max_grad_norm=None,
             eval_loss=initial_loss,
             eval_mse_loss=initial_mse_loss,
+            train_lfq_boundary_loss=initial_boundary_loss,
+            validation_lfq_boundary_loss=(
+                initial_validation[2] if initial_validation is not None else None
+            ),
             validation_loss=(
                 initial_validation[0] if initial_validation is not None else None
             ),
@@ -1166,9 +1445,15 @@ def _train_block(
             f"{slot}:{initial_validation[1][slot]:.6e}"
             for slot in LFQ_SLOT_NAMES
         )
+        boundary_text = (
+            f" boundary={initial_validation[2]:.6e}"
+            if initial_validation[2] is not None
+            else ""
+        )
         print(
             f"[omniquant][validation] layer={layer_idx} epoch=0/{config.epochs} "
             f"loss={initial_validation[0]:.6e} slot_loss={slot_text}"
+            f"{boundary_text}"
         )
 
     if optimizer is None:
@@ -1177,6 +1462,10 @@ def _train_block(
             initial_loss,
             initial_slot_losses,
             dict(initial_slot_losses),
+            initial_boundary_loss,
+            initial_boundary_loss,
+            initial_boundary_slot_losses,
+            dict(initial_boundary_slot_losses),
             initial_mse_loss,
             initial_mse_loss,
             0,
@@ -1208,16 +1497,25 @@ def _train_block(
         initial_loss,
         dict(initial_slot_losses),
         initial_mse_loss,
+        initial_boundary_loss,
+        dict(initial_boundary_slot_losses),
     )
     best_parameters = snapshot_trainable_parameters()
     checked_let_gradient = not let_parameters
     train_block.train()
     for epoch in range(1, config.epochs + 1):
         epoch_loss = 0.0
+        epoch_boundary_total = 0.0
         epoch_grad_norm_total = 0.0
         epoch_grad_norm_max = 0.0
         for batch_idx, (fp_batch, quant_batch) in enumerate(zip(fp_inputs, quant_inputs)):
-            loss, _slot_losses, _mse_loss = compute_batch_loss(
+            (
+                loss,
+                _slot_losses,
+                boundary_loss,
+                _boundary_slot_losses,
+                _mse_loss,
+            ) = compute_batch_loss(
                 batch_idx,
                 fp_batch,
                 quant_batch,
@@ -1258,8 +1556,15 @@ def _train_block(
             if any(not torch.isfinite(parameter).all() for parameter in trainable_parameters):
                 raise FloatingPointError("Non-finite OmniQuant parameter encountered after optimizer step.")
             epoch_loss += float(loss.detach())
+            if boundary_loss is not None:
+                epoch_boundary_total += float(boundary_loss.detach())
 
         train_loss = epoch_loss / max(1, len(fp_inputs))
+        train_boundary_loss = (
+            epoch_boundary_total / max(1, len(fp_inputs))
+            if lfq_boundary_targets is not None
+            else None
+        )
         mean_grad_norm = epoch_grad_norm_total / max(1, len(fp_inputs))
         should_evaluate = (
             config.epoch_eval_interval > 0
@@ -1278,6 +1583,8 @@ def _train_block(
                 evaluated[0],
                 dict(evaluated[1]),
                 evaluated[2],
+                evaluated[3],
+                dict(evaluated[4]),
             )
             best_parameters = snapshot_trainable_parameters()
             is_best = True
@@ -1289,6 +1596,12 @@ def _train_block(
                 max_grad_norm=epoch_grad_norm_max,
                 eval_loss=evaluated[0] if evaluated is not None else None,
                 eval_mse_loss=evaluated[2] if evaluated is not None else None,
+                train_lfq_boundary_loss=train_boundary_loss,
+                validation_lfq_boundary_loss=(
+                    validation_evaluated[2]
+                    if validation_evaluated is not None
+                    else None
+                ),
                 validation_loss=(
                     validation_evaluated[0]
                     if validation_evaluated is not None
@@ -1308,6 +1621,11 @@ def _train_block(
             (
                 f" eval_loss={evaluated[0]:.6e} "
                 f"eval_mse={evaluated[2]:.6e}"
+                + (
+                    f" eval_boundary={evaluated[3]:.6e}"
+                    if evaluated[3] is not None
+                    else ""
+                )
             )
             if evaluated is not None
             else ""
@@ -1322,10 +1640,21 @@ def _train_block(
             validation_text = (
                 f" val_loss={validation_evaluated[0]:.6e} "
                 f"val_slot={validation_slot_text}"
+                + (
+                    f" val_boundary={validation_evaluated[2]:.6e}"
+                    if validation_evaluated[2] is not None
+                    else ""
+                )
             )
+        train_boundary_text = (
+            f"boundary={train_boundary_loss:.6e} "
+            if train_boundary_loss is not None
+            else ""
+        )
         print(
             f"[omniquant][epoch] layer={layer_idx} "
             f"epoch={epoch}/{config.epochs} train_loss={train_loss:.6e} "
+            f"{train_boundary_text}"
             f"grad_norm_mean={mean_grad_norm:.6e} "
             f"grad_norm_max={epoch_grad_norm_max:.6e}"
             f"{evaluation_text}{validation_text}{best_marker}"
@@ -1334,11 +1663,23 @@ def _train_block(
 
     if config.epoch_eval_interval > 0:
         restore_trainable_parameters(best_parameters)
-        final_loss, final_slot_losses, final_mse_loss = best_evaluation
+        (
+            final_loss,
+            final_slot_losses,
+            final_mse_loss,
+            final_boundary_loss,
+            final_boundary_slot_losses,
+        ) = best_evaluation
     else:
         # Preserve legacy compute cost when epoch evaluation is disabled:
         # only evaluate the final fixed parameter state once.
-        final_loss, final_slot_losses, final_mse_loss = evaluate_parameters()
+        (
+            final_loss,
+            final_slot_losses,
+            final_mse_loss,
+            final_boundary_loss,
+            final_boundary_slot_losses,
+        ) = evaluate_parameters()
         last_metric = epoch_metrics[-1]
         epoch_metrics[-1] = OmniQuantEpochMetric(
             epoch=last_metric.epoch,
@@ -1347,6 +1688,10 @@ def _train_block(
             max_grad_norm=last_metric.max_grad_norm,
             eval_loss=final_loss,
             eval_mse_loss=final_mse_loss,
+            train_lfq_boundary_loss=last_metric.train_lfq_boundary_loss,
+            validation_lfq_boundary_loss=(
+                last_metric.validation_lfq_boundary_loss
+            ),
             validation_loss=last_metric.validation_loss,
             validation_lfq_slot_losses=last_metric.validation_lfq_slot_losses,
         )
@@ -1357,6 +1702,11 @@ def _train_block(
         print(
             f"[omniquant][best] layer={layer_idx} epoch={best_epoch} "
             f"eval_loss={final_loss:.6e} eval_mse={final_mse_loss:.6e}"
+            + (
+                f" eval_boundary={final_boundary_loss:.6e}"
+                if final_boundary_loss is not None
+                else ""
+            )
         )
 
     return (
@@ -1364,6 +1714,10 @@ def _train_block(
         final_loss,
         initial_slot_losses,
         final_slot_losses,
+        initial_boundary_loss,
+        final_boundary_loss,
+        initial_boundary_slot_losses,
+        final_boundary_slot_losses,
         initial_mse_loss,
         final_mse_loss,
         best_epoch,
@@ -1562,6 +1916,12 @@ def _checkpoint_epoch_metrics(
                 max_grad_norm=optional_float("max_grad_norm"),
                 eval_loss=optional_float("eval_loss"),
                 eval_mse_loss=optional_float("eval_mse_loss"),
+                train_lfq_boundary_loss=optional_float(
+                    "train_lfq_boundary_loss"
+                ),
+                validation_lfq_boundary_loss=optional_float(
+                    "validation_lfq_boundary_loss"
+                ),
                 validation_loss=optional_float("validation_loss"),
                 validation_lfq_slot_losses=tuple(
                     (str(slot), float(loss))
@@ -1580,6 +1940,10 @@ def _epoch_metric_state(metric: OmniQuantEpochMetric) -> dict[str, Any]:
         "max_grad_norm": metric.max_grad_norm,
         "eval_loss": metric.eval_loss,
         "eval_mse_loss": metric.eval_mse_loss,
+        "train_lfq_boundary_loss": metric.train_lfq_boundary_loss,
+        "validation_lfq_boundary_loss": (
+            metric.validation_lfq_boundary_loss
+        ),
         "validation_loss": metric.validation_loss,
         "validation_lfq_slot_losses": dict(
             metric.validation_lfq_slot_losses
@@ -1628,6 +1992,17 @@ def _validate_omniquant_checkpoint(
                     "lfq_vocab_scope": config.lfq_vocab_scope,
                     "lfq_slot_weights": tuple(config.lfq_slot_weights),
                     "lfq_loss_weight": config.lfq_loss_weight,
+                    "lfq_boundary_loss_weight": (
+                        config.lfq_boundary_loss_weight
+                    ),
+                    "lfq_boundary_topk": config.lfq_boundary_topk,
+                    "lfq_boundary_negative_count": (
+                        config.lfq_boundary_negative_count
+                    ),
+                    "lfq_boundary_tie_threshold": (
+                        config.lfq_boundary_tie_threshold
+                    ),
+                    "lfq_boundary_gap_scale": config.lfq_boundary_gap_scale,
                 }
             )
     legacy_defaults = {
@@ -1635,6 +2010,11 @@ def _validate_omniquant_checkpoint(
         "smoothquant_alpha": DEFAULT_SMOOTHQUANT_ALPHA,
         "final_objective": "mse",
         "lfq_loss_weight": 1.0,
+        "lfq_boundary_loss_weight": 0.0,
+        "lfq_boundary_topk": 32,
+        "lfq_boundary_negative_count": 32,
+        "lfq_boundary_tie_threshold": 1e-2,
+        "lfq_boundary_gap_scale": 1.0,
     }
     for key, expected in expected_config.items():
         saved_value = saved_config.get(key, legacy_defaults.get(key))
@@ -1804,7 +2184,12 @@ def apply_omniquant_layers(
             f"[omniquant] LFQ enabled final_layer={final_layer_idx} "
             f"token_scope={config.lfq_token_scope} "
             f"vocab_scope={config.lfq_vocab_scope} tokens={token_counts} "
-            f"weights={weight_text} lfq_weight={config.lfq_loss_weight:.6g}"
+            f"weights={weight_text} lfq_weight={config.lfq_loss_weight:.6g} "
+            f"boundary_weight={config.lfq_boundary_loss_weight:.6g} "
+            f"boundary_topk={config.lfq_boundary_topk} "
+            f"boundary_negatives={config.lfq_boundary_negative_count} "
+            f"boundary_tie={config.lfq_boundary_tie_threshold:.6g} "
+            f"boundary_gap_scale={config.lfq_boundary_gap_scale:.6g}"
         )
     summaries: dict[int, OmniQuantSummary] = {}
     fp_inputs: list[Batch] | None = None
@@ -1834,6 +2219,10 @@ def apply_omniquant_layers(
         source_checkpoint: Path | None = None
         initial_lfq_slot_losses: dict[str, float] = {}
         final_lfq_slot_losses: dict[str, float] = {}
+        initial_lfq_boundary_loss: float | None = None
+        final_lfq_boundary_loss: float | None = None
+        initial_lfq_boundary_slot_losses: dict[str, float] = {}
+        final_lfq_boundary_slot_losses: dict[str, float] = {}
         initial_mse_loss: float | None = None
         final_mse_loss: float | None = None
         best_epoch: int | None = None
@@ -1888,6 +2277,10 @@ def apply_omniquant_layers(
                 final_loss,
                 initial_lfq_slot_losses,
                 final_lfq_slot_losses,
+                initial_lfq_boundary_loss,
+                final_lfq_boundary_loss,
+                initial_lfq_boundary_slot_losses,
+                final_lfq_boundary_slot_losses,
                 initial_mse_loss,
                 final_mse_loss,
                 best_epoch,
@@ -1936,6 +2329,23 @@ def apply_omniquant_layers(
             lfq_loss_weight=(
                 config.lfq_loss_weight if objective != "mse" else 1.0
             ),
+            lfq_boundary_loss_weight=(
+                config.lfq_boundary_loss_weight
+                if objective != "mse"
+                else 0.0
+            ),
+            initial_lfq_boundary_loss=initial_lfq_boundary_loss,
+            final_lfq_boundary_loss=final_lfq_boundary_loss,
+            initial_lfq_boundary_slot_losses=tuple(
+                (slot, initial_lfq_boundary_slot_losses[slot])
+                for slot in LFQ_SLOT_NAMES
+                if slot in initial_lfq_boundary_slot_losses
+            ),
+            final_lfq_boundary_slot_losses=tuple(
+                (slot, final_lfq_boundary_slot_losses[slot])
+                for slot in LFQ_SLOT_NAMES
+                if slot in final_lfq_boundary_slot_losses
+            ),
             initial_mse_loss=initial_mse_loss,
             final_mse_loss=final_mse_loss,
             best_epoch=best_epoch,
@@ -1965,6 +2375,17 @@ def apply_omniquant_layers(
                     "lfq_vocab_scope": config.lfq_vocab_scope,
                     "lfq_slot_weights": tuple(config.lfq_slot_weights),
                     "lfq_loss_weight": config.lfq_loss_weight,
+                    "lfq_boundary_loss_weight": (
+                        config.lfq_boundary_loss_weight
+                    ),
+                    "lfq_boundary_topk": config.lfq_boundary_topk,
+                    "lfq_boundary_negative_count": (
+                        config.lfq_boundary_negative_count
+                    ),
+                    "lfq_boundary_tie_threshold": (
+                        config.lfq_boundary_tie_threshold
+                    ),
+                    "lfq_boundary_gap_scale": config.lfq_boundary_gap_scale,
                     "epochs": config.epochs,
                     "validation_sample_size": config.validation_sample_size,
                     "train_sample_size": config.train_sample_size,
@@ -1987,6 +2408,14 @@ def apply_omniquant_layers(
                 "final_loss": final_loss,
                 "initial_lfq_slot_losses": dict(initial_lfq_slot_losses),
                 "final_lfq_slot_losses": dict(final_lfq_slot_losses),
+                "initial_lfq_boundary_loss": initial_lfq_boundary_loss,
+                "final_lfq_boundary_loss": final_lfq_boundary_loss,
+                "initial_lfq_boundary_slot_losses": dict(
+                    initial_lfq_boundary_slot_losses
+                ),
+                "final_lfq_boundary_slot_losses": dict(
+                    final_lfq_boundary_slot_losses
+                ),
                 "initial_mse_loss": initial_mse_loss,
                 "final_mse_loss": final_mse_loss,
                 "best_epoch": best_epoch,
@@ -2002,6 +2431,22 @@ def apply_omniquant_layers(
                 f"{slot}:{initial_lfq_slot_losses[slot]:.6e}->{final_lfq_slot_losses[slot]:.6e}"
                 for slot in LFQ_SLOT_NAMES
             ) + f" lfq_weight={config.lfq_loss_weight:.6g} "
+        boundary_loss_text = ""
+        if (
+            initial_lfq_boundary_loss is not None
+            and final_lfq_boundary_loss is not None
+        ):
+            boundary_slot_text = ",".join(
+                f"{slot}:{initial_lfq_boundary_slot_losses[slot]:.6e}"
+                f"->{final_lfq_boundary_slot_losses[slot]:.6e}"
+                for slot in LFQ_SLOT_NAMES
+            )
+            boundary_loss_text = (
+                f"boundary={initial_lfq_boundary_loss:.6e}"
+                f"->{final_lfq_boundary_loss:.6e} "
+                f"boundary_slot={boundary_slot_text} "
+                f"boundary_weight={config.lfq_boundary_loss_weight:.6g} "
+            )
         mse_loss_text = ""
         if (
             objective != "mse"
@@ -2015,6 +2460,7 @@ def apply_omniquant_layers(
             f"[omniquant] layer={layer_idx} replaced_linears={replaced} "
             f"objective={objective} loss={initial_loss:.6e}->{final_loss:.6e} "
             f"{lfq_loss_text}"
+            f"{boundary_loss_text}"
             f"{mse_loss_text}"
             f"source={'prefix_checkpoint' if source_checkpoint is not None else 'optimized'} "
             f"let_mode={'learned' if layer_config.learn_let else ('fixed' if layer_config.use_let else 'none')} "
@@ -2086,10 +2532,22 @@ def restore_omniquant_layers_from_checkpoints(
         layers[layer_idx] = final_block
         initial_lfq_slot_losses = state.get("initial_lfq_slot_losses", {})
         final_lfq_slot_losses = state.get("final_lfq_slot_losses", {})
+        initial_lfq_boundary_slot_losses = state.get(
+            "initial_lfq_boundary_slot_losses", {}
+        )
+        final_lfq_boundary_slot_losses = state.get(
+            "final_lfq_boundary_slot_losses", {}
+        )
         if not isinstance(initial_lfq_slot_losses, Mapping) or not isinstance(
             final_lfq_slot_losses, Mapping
         ):
             raise TypeError(f"Checkpoint LFQ slot losses are invalid in {checkpoint_path}.")
+        if not isinstance(
+            initial_lfq_boundary_slot_losses, Mapping
+        ) or not isinstance(final_lfq_boundary_slot_losses, Mapping):
+            raise TypeError(
+                f"Checkpoint LFQ boundary slot losses are invalid in {checkpoint_path}."
+            )
         best_epoch_value = state.get("best_epoch")
         best_epoch = None if best_epoch_value is None else int(best_epoch_value)
         epoch_metrics = _checkpoint_epoch_metrics(
@@ -2118,6 +2576,31 @@ def restore_omniquant_layers_from_checkpoints(
             ),
             lfq_loss_weight=(
                 config.lfq_loss_weight if expected_objective != "mse" else 1.0
+            ),
+            lfq_boundary_loss_weight=(
+                config.lfq_boundary_loss_weight
+                if expected_objective != "mse"
+                else 0.0
+            ),
+            initial_lfq_boundary_loss=(
+                float(state["initial_lfq_boundary_loss"])
+                if state.get("initial_lfq_boundary_loss") is not None
+                else None
+            ),
+            final_lfq_boundary_loss=(
+                float(state["final_lfq_boundary_loss"])
+                if state.get("final_lfq_boundary_loss") is not None
+                else None
+            ),
+            initial_lfq_boundary_slot_losses=tuple(
+                (slot, float(initial_lfq_boundary_slot_losses[slot]))
+                for slot in LFQ_SLOT_NAMES
+                if slot in initial_lfq_boundary_slot_losses
+            ),
+            final_lfq_boundary_slot_losses=tuple(
+                (slot, float(final_lfq_boundary_slot_losses[slot]))
+                for slot in LFQ_SLOT_NAMES
+                if slot in final_lfq_boundary_slot_losses
             ),
             initial_mse_loss=(
                 float(state["initial_mse_loss"])
