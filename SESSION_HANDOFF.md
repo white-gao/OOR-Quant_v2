@@ -39,6 +39,7 @@ suite；修改 fake-quant 核心后至少执行：
 
 ```bash
 /home/yhhuang/miniconda3/envs/benchmark2/bin/python -m unittest discover -s tests
+python -m pytest -q
 ```
 
 缓存目录可以随时删除。
@@ -101,6 +102,13 @@ pure W8A8 时必须关闭它。真实 FP8 路径依赖可用的 CUDA 12 runtime�
 `torch._scaled_mm` 和 vLLM fused `scaled_fp8_quant` custom op；PyTorch、
 torchvision 和 vLLM 的 CUDA build 必须一致。
 
+真实 FP8 推荐 runner 支持 deterministic round-robin 多卡测评：每张卡独立加载
+模型并使用 `--eval_num_shards/--eval_shard_id` 处理一个 shard；单 shard 禁止
+直接 `--evaluate`，全部完成后由 `python -m real_quant.merge_eval_shards`
+恢复原样本顺序、校验配置一致性、聚合 latency 并只计算一次 benchmark metric。
+正式入口为 `scripts/real_quant/run_1p7b_ad_full_rtn_fp8w8a8_sharded.sh`，支持
+`GPUS`、`OUTPUT_DIR`、`OVERWRITE` 和 `DRY_RUN` 覆盖，并在 INT/TERM 时回收子进程。
+
 ## Fake-QDQ 与 OmniQuant
 
 主入口：
@@ -115,14 +123,13 @@ python -m fake_quant.run_m1_onerec_ad --help
 none / fp8_e4m3fn / fp4_e2m1 / int8 / int6 / int4
 ```
 
-主实验协议统一使用整数权重与整数 activation。入口默认是
-`baseline_qdq + asymmetric INT8-W + dynamic per-token symmetric INT8-A`；
-例如 W4A8 只需把权重格式指定为 `int4`。INT4-W/BF16-A 和 FP8 组合只作为
-显式消融或历史/部署对照，不与整数 PTQ 主结果混用。整数权重采用
-per-output-channel QDQ，整数 activation 采用 dynamic per-token symmetric
-QDQ；fake-QDQ 最终仍以模型 dtype 执行 `F.linear`。`fp4_e2m1` 使用标准有限
-E2M1 codebook、round-to-nearest-ties-to-even、权重 per-output-channel scale 与
-activation dynamic per-token scale；浮点权重格式只允许 symmetric QDQ。
+入口默认仍是 `baseline_qdq + asymmetric INT8-W + dynamic per-token
+symmetric INT8-A`，但当前新方法实验主线优先使用浮点 QDQ：W4A8 表示
+FP4-E2M1-W/FP8-E4M3-A，W8A8 表示 FP8-E4M3-W/A。INT4/INT8 结果保留为
+历史和数据类型消融，不再为新版 ABC-LFQ 重跑完整 INT sweep。整数权重默认
+采用 affine asymmetric zero-point QDQ；FP4/FP8 权重只能使用 zero-centered
+symmetric QDQ。activation 仍为 dynamic per-token，fake-QDQ 最终以模型 dtype
+执行 `F.linear`。当前没有 FP6 codebook，因此尚不宣称 FP W6A6 支持。
 
 统一数值契约（2026-08-18 起）为 deployment-matched，适用于 RTN、
 SmoothQuant、GPTQ、OmniQuant 和 LFQ：FP32 只用于 master weight、量化参数、
@@ -135,7 +142,7 @@ OmniQuant 实现在 fake_quant/omniquant/runtime.py，采用逐 block 的输出�
 MSE。当前包含：
 
 - LWC：每个 Linear、每个输出通道学习 clipping 参数；INT4/INT6/INT8 支持 symmetric
-  和 asymmetric，FP8 E4M3FN 支持 zero-centered symmetric clipping；
+  和 asymmetric，FP4 E2M1/FP8 E4M3FN 支持 zero-centered symmetric clipping；
 - LET-QKV：input norm 到共享 Q/K/V scale；
 - LET-MLP：post-attention norm 到共享 gate/up scale；
 - LET-V/O：适配 Qwen3 GQA head 排列的 V→O scale；
@@ -187,7 +194,7 @@ tests/test_fake_quant_deployment_matched.py
 ```
 
 已验证：核心文件 `py_compile` 通过，`python -m unittest discover -s tests`
-18/18 通过；小型端到端训练测试能产生非空 train/validation boundary 诊断。
+24/24 通过，pytest 27/27 通过；小型端到端训练测试能产生非空 train/validation boundary 诊断。
 尚未进行真实模型 calibration 或推荐测评。
 
 ### Asymmetric LWC 的当前实现
@@ -220,6 +227,35 @@ W_qdq = (Q - zero_point) * scale
 
 需要复现历史 symmetric INT 结果时，必须显式写
 `--weight_quant_scheme symmetric`。
+
+### Group-wise 权重量化（RTN / SmoothQuant）
+
+RTN 与 SmoothQuant 现在支持 `--weight_group_size G`。这里的 group 位于每个
+output-channel 行内部，沿 Linear 的 `in_features` 连续分组；每个
+`(output_channel, input_group)` 独立计算 scale/zero point。`G=0` 或 `None`
+严格保留历史 per-output-channel 路径，尾部不足一个 group 时 asymmetric 路径
+用 mask 排除 padding。该接口暂未接入 OmniQuant/LWC。
+
+支持链路包括 `fake_quant.quant`、普通 RTN wrapper、SmoothQuant fold/runtime、
+CLI metadata 和测试。正式 W4A8 per-channel/g128 串行全量 launcher 为：
+
+```text
+scripts/fake_quant/run_1p7b_ad_full_fp4w_fp8a_rtn_pc_g128_cuda0123.sh
+```
+
+### 保留的诊断与实验工具
+
+- `docs/QUANT_FORMAT_LAYERWISE_MSE_AD128.md` 已同时记录局部 block MSE 与两流
+  prefix-quantized 累计 MSE；累计流分别传播 FP 和量化 hidden state。
+- `fake_quant/probe_activation_quant_patterns.py`：压缩完整 SID-ABC 组后，绘制
+  Layer-27 q_proj/o_proj 的 BF16 输入、局部 activation QDQ 与误差矩阵。
+- `fake_quant/probe_w8a8_projection_output_patterns.py`：在相同 prompt 上比较
+  BF16 与端到端 W8A8 的 q_proj/o_proj 输出和累计误差。
+- 两个 probe 的 launcher 位于 `scripts/fake_quant/run_layer27_*_probe_ad.sh`。
+- Product 域 FP8 W8A8 SmoothQuant alpha 搜索入口为
+  `scripts/fake_quant/search_product_smoothquant_alpha_mse_fp8w8a8.sh`。
+- 已完成的单文件 FP4/INT4 MSE 比较器及 launcher 已删除；结论保留在文档和
+  `artifacts/results/` 中。
 
 ## 已完成的关键结果
 

@@ -167,7 +167,10 @@ def parse_args() -> argparse.Namespace:
         "--weight_quant_format",
         choices=QUANT_FORMAT_CHOICES,
         default=DEFAULT_WEIGHT_QUANT_FORMAT,
-        help="Fake-QDQ weight format. Quantized weights use per-output-channel scaling.",
+        help=(
+            "Fake-QDQ weight format. Weights use per-output-channel scaling by "
+            "default, or finer input-dimension groups with --weight_group_size."
+        ),
     )
     parser.add_argument(
         "--weight_quant_scheme",
@@ -176,10 +179,19 @@ def parse_args() -> argparse.Namespace:
         choices=WEIGHT_QUANT_SCHEME_CHOICES,
         default=None,
         help=(
-            "Weight quantizer scheme for RTN and OmniQuant. By default integer "
-            "weights use asymmetric affine QDQ with a zero point, while floating "
+            "Weight quantizer scheme for RTN, SmoothQuant, and OmniQuant. By "
+            "default integer weights use asymmetric affine QDQ with a zero point, while floating "
             "formats use required zero-centered symmetric QDQ. The old "
             "--omni_weight_quant_scheme name remains a compatibility alias."
+        ),
+    )
+    parser.add_argument(
+        "--weight_group_size",
+        type=int,
+        default=0,
+        help=(
+            "RTN/SmoothQuant weight group size along Linear in_features. "
+            "0 keeps one scale/zero-point per output channel."
         ),
     )
     parser.add_argument(
@@ -414,6 +426,16 @@ def parse_args() -> argparse.Namespace:
 
 
 def _attach_fixed_defaults(args: argparse.Namespace) -> None:
+    if args.weight_group_size < 0:
+        raise ValueError("--weight_group_size must be 0 or a positive integer.")
+    groupwise_modes = {"baseline_w8a8", "baseline_qdq", "smoothquant_w8a8"}
+    if args.weight_group_size > 0 and args.mode not in groupwise_modes:
+        raise ValueError(
+            "--weight_group_size is currently supported only for RTN "
+            "(baseline_qdq/baseline_w8a8) and SmoothQuant."
+        )
+    if args.weight_group_size > 0 and args.weight_quant_format == "none":
+        raise ValueError("--weight_group_size requires a quantized weight format.")
     args.weight_quant_scheme = resolve_weight_quant_scheme(
         args.weight_quant_format, args.weight_quant_scheme
     )
@@ -784,6 +806,7 @@ def apply_smoothquant_layers(
     act_quant_mode: ActQuantMode = "per_linear",
     weight_quant_format: QuantFormat = "fp8_e4m3fn",
     weight_quant_scheme: WeightQuantScheme | None = None,
+    weight_group_size: int | None = None,
     activation_quant_format: QuantFormat = "fp8_e4m3fn",
     smoothquant_alpha: float = DEFAULT_SMOOTHQUANT_ALPHA,
     smoothquant_min_scale: float | None = DEFAULT_SMOOTHQUANT_MIN_SCALE,
@@ -838,6 +861,7 @@ def apply_smoothquant_layers(
             act_quant=act_quant,
             weight_quant_format=weight_quant_format,
             weight_quant_scheme=weight_quant_scheme,
+            weight_group_size=weight_group_size,
             activation_quant_format=activation_quant_format,
             smooth_scope=smooth_scope,
             folded_names=folded_names,
@@ -858,6 +882,7 @@ def apply_smoothquant_layers(
         print(
             f"[smoothquant_qdq w={weight_quant_format}/{weight_quant_scheme} "
             f"a={activation_quant_format}] layer={layer_idx} replaced_linears={replaced}, "
+            f"weight_group_size={weight_group_size or 'per_channel'}, "
             f"smooth_scope={smooth_scope}, "
             f"smooth_fold={int(smooth_fold)}, folded={len(folded_names)}, "
             f"shared_attention_modules={shared_attention_modules}, "
@@ -946,6 +971,7 @@ def apply_baseline_layers(
     weight_quant_format: QuantFormat = DEFAULT_WEIGHT_QUANT_FORMAT,
     activation_quant_format: QuantFormat = DEFAULT_ACTIVATION_QUANT_FORMAT,
     weight_quant_scheme: WeightQuantScheme | None = None,
+    weight_group_size: int | None = None,
 ) -> dict[int, BaselineQuantSummary]:
     """Apply min-max fake QDQ with independently selected weight/activation formats."""
     layers = get_transformer_layers(model)
@@ -958,6 +984,7 @@ def apply_baseline_layers(
                 act_quant=act_quant,
                 weight_quant_format=weight_quant_format,
                 weight_quant_scheme=weight_quant_scheme,
+                weight_group_size=weight_group_size,
                 activation_quant_format=activation_quant_format,
             )
             summary = BaselineQuantSummary(replaced_linears=1, skipped_linears=0)
@@ -966,6 +993,7 @@ def apply_baseline_layers(
                 layer,
                 weight_quant_format=weight_quant_format,
                 weight_quant_scheme=weight_quant_scheme,
+                weight_group_size=weight_group_size,
                 activation_quant_format=activation_quant_format,
                 act_quant_mode=act_quant_mode,
             )
@@ -973,6 +1001,7 @@ def apply_baseline_layers(
         print(
             f"[baseline_qdq w={weight_quant_format}/{weight_quant_scheme} a={activation_quant_format}] "
             f"layer={layer_idx} replaced_linears={summary.replaced_linears} "
+            f"weight_group_size={weight_group_size or 'per_channel'} "
             f"skipped_linears={summary.skipped_linears}, "
             f"shared_attention_modules={summary.shared_attention_modules}, "
             f"shared_mlp_modules={summary.shared_mlp_modules}"
@@ -1546,6 +1575,7 @@ def main() -> None:
             layer_indices=layer_indices,
             act_quant=args.act_quant,
             weight_quant_scheme=args.weight_quant_scheme,
+            weight_group_size=args.weight_group_size,
             act_quant_mode=args.act_quant_mode,
             weight_quant_format=args.weight_quant_format,
             activation_quant_format=args.activation_quant_format,
@@ -1612,6 +1642,7 @@ def main() -> None:
                 act_quant_mode=args.act_quant_mode,
                 weight_quant_format=args.weight_quant_format,
                 weight_quant_scheme=args.weight_quant_scheme,
+                weight_group_size=args.weight_group_size,
                 activation_quant_format=args.activation_quant_format,
                 smoothquant_alpha=args.smoothquant_alpha,
                 smoothquant_min_scale=args.smoothquant_min_scale,
@@ -1677,6 +1708,18 @@ def main() -> None:
         "gptq_block_size": args.gptq_block_size,
         "omni_lwc": args.omni_lwc,
         "weight_quant_scheme": args.weight_quant_scheme,
+        "weight_group_size": (
+            None if args.mode == "full_precision" else args.weight_group_size
+        ),
+        "weight_quant_granularity": (
+            "none"
+            if args.mode == "full_precision"
+            else (
+                "per_output_channel"
+                if args.weight_group_size == 0
+                else "per_output_channel_input_group"
+            )
+        ),
         "omni_weight_quant_scheme": args.weight_quant_scheme,
         "omni_let": args.omni_let,
         "omni_let_mode": args.omni_let_mode,

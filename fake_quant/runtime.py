@@ -39,6 +39,7 @@ def load_fake_qdq_causal_lm(
     trust_remote_code: bool = True,
     weight_quant_format: QuantFormat = "int8",
     weight_quant_scheme: WeightQuantScheme | None = None,
+    weight_group_size: int | None = None,
     activation_quant_format: QuantFormat = "int8",
     activation_quant_mode: ActQuantMode = "shared_input",
 ) -> tuple[Any, Any, dict[str, Any]]:
@@ -62,6 +63,7 @@ def load_fake_qdq_causal_lm(
         model,
         weight_quant_format=weight_format,
         weight_quant_scheme=weight_scheme,
+        weight_group_size=weight_group_size,
         activation_quant_format=activation_format,
         act_quant_mode=effective_act_mode,
     )
@@ -69,6 +71,7 @@ def load_fake_qdq_causal_lm(
         "mode": "fake_qdq",
         "weight_quant_format": weight_format,
         "weight_quant_scheme": weight_scheme,
+        "weight_group_size": weight_group_size,
         "activation_quant_format": activation_format,
         "activation_quant_mode": effective_act_mode,
         "execution": "fake_qdq_then_f_linear_in_model_dtype",

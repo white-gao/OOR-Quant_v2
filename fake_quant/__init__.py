@@ -21,6 +21,7 @@ from .quant import (
     fp4_e2m1_qdq_forward,
     fp4_e2m1_quantize,
     fp8_e4m3_qdq_forward,
+    normalize_weight_group_size,
     resolve_weight_quant_scheme,
     weight_per_output_channel_qdq_forward,
 )
@@ -56,6 +57,7 @@ __all__ = [
     "iter_baseline_qdq_modules",
     "iter_gptq_w8a8_modules",
     "iter_smoothquant_w8a8_modules",
+    "normalize_weight_group_size",
     "resolve_weight_quant_scheme",
     "smoothquant_quantized_module_from_scales",
     "weight_per_output_channel_qdq_forward",

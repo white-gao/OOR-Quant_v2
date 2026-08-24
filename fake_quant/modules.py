@@ -10,6 +10,7 @@ from .quant import (
     QuantFormat,
     WeightQuantScheme,
     activation_per_token_qdq_by_format,
+    normalize_weight_group_size,
     quant_format_qmax,
     resolve_weight_quant_scheme,
     validate_quant_format,
@@ -20,10 +21,11 @@ from .quant import (
 class BaselineFakeQuantLinear(nn.Module):
     """Inference-time min-max fake-QDQ Linear wrapper.
 
-    Weights are QDQ'd once per output channel.  Activations are QDQ'd per
-    token during ``forward``.  The following matrix multiplication remains
-    ``F.linear`` in the model dtype, so this wrapper measures numeric quality
-    rather than low-bit kernel latency or packed-weight memory use.
+    Weights are QDQ'd once per output channel or finer input group.
+    Activations are QDQ'd per token during ``forward``. The following matrix
+    multiplication remains ``F.linear`` in the model dtype, so this wrapper
+    measures numeric quality rather than low-bit kernel latency or
+    packed-weight memory use.
     """
 
     def __init__(
@@ -35,6 +37,7 @@ class BaselineFakeQuantLinear(nn.Module):
         eps: float = 1e-12,
         weight_quant_format: QuantFormat = "int8",
         weight_quant_scheme: WeightQuantScheme | None = None,
+        weight_group_size: int | None = None,
         activation_quant_format: QuantFormat | None = None,
     ) -> None:
         super().__init__()
@@ -43,6 +46,7 @@ class BaselineFakeQuantLinear(nn.Module):
 
         weight_format = validate_quant_format(weight_quant_format)
         weight_scheme = resolve_weight_quant_scheme(weight_format, weight_quant_scheme)
+        normalized_weight_group_size = normalize_weight_group_size(weight_group_size)
         if activation_quant_format is None:
             activation_format: QuantFormat = "int8" if act_quant == "per_token" else "none"
         else:
@@ -57,6 +61,7 @@ class BaselineFakeQuantLinear(nn.Module):
         self.act_quant = act_quant
         self.weight_quant_format = weight_format
         self.weight_quant_scheme = weight_scheme
+        self.weight_group_size = normalized_weight_group_size
         self.activation_quant_format = activation_format
         # Retained for legacy FP8 callers and archived decode-A16 support.
         self.qmax = (
@@ -71,6 +76,7 @@ class BaselineFakeQuantLinear(nn.Module):
                 linear.weight.detach(),
                 quant_format=self.weight_quant_format,
                 quant_scheme=self.weight_quant_scheme,
+                group_size=self.weight_group_size,
                 eps=self.eps,
                 fp8_qmax=float(qmax),
             )
@@ -101,6 +107,7 @@ class BaselineFakeQuantLinear(nn.Module):
             f"in_features={self.in_features}, out_features={self.out_features}, "
             f"weight_quant_format={self.weight_quant_format}, "
             f"weight_quant_scheme={self.weight_quant_scheme}, "
+            f"weight_group_size={self.weight_group_size}, "
             f"activation_quant_format={self.activation_quant_format}, "
             f"act_quant={self.act_quant}"
         )
@@ -180,12 +187,14 @@ class SmoothQuantFakeQuantLinear(nn.Module):
         qmax: float = FP8_MAX,
         eps: float = 1e-12,
         weight_quant_format: QuantFormat = "fp8_e4m3fn",
+        weight_group_size: int | None = None,
         activation_quant_format: QuantFormat | None = None,
     ) -> None:
         super().__init__()
         if act_quant not in ("none", "per_token"):
             raise ValueError(f"Unsupported act_quant: {act_quant}")
         weight_format = validate_quant_format(weight_quant_format)
+        normalized_weight_group_size = normalize_weight_group_size(weight_group_size)
         activation_format = validate_quant_format(
             activation_quant_format
             if activation_quant_format is not None
@@ -202,6 +211,7 @@ class SmoothQuantFakeQuantLinear(nn.Module):
         self.out_features = int(weight_qdq.shape[0])
         self.act_quant = act_quant
         self.weight_quant_format = weight_format
+        self.weight_group_size = normalized_weight_group_size
         self.activation_quant_format = activation_format
         self.qmax = (
             float(qmax)
@@ -252,6 +262,7 @@ class SmoothQuantFakeQuantLinear(nn.Module):
         return (
             f"in_features={self.in_features}, out_features={self.out_features}, "
             f"weight_quant_format={self.weight_quant_format}, "
+            f"weight_group_size={self.weight_group_size}, "
             f"activation_quant_format={self.activation_quant_format}, "
             f"act_quant={self.act_quant}, folded={self.input_scale is None}, qmax={self.qmax}"
         )

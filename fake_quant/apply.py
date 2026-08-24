@@ -15,6 +15,7 @@ from .quant import (
     QuantFormat,
     WeightQuantScheme,
     activation_per_token_qdq_by_format,
+    normalize_weight_group_size,
     resolve_weight_quant_scheme,
     validate_quant_format,
 )
@@ -47,6 +48,7 @@ def apply_baseline_w8a8(
     *,
     act_quant: ActQuant = "per_token",
     act_quant_mode: ActQuantMode = "per_linear",
+    weight_group_size: int | None = None,
     skip_module_names: Iterable[str] = ("lm_head",),
     target_regex: str | None = None,
     skip_regex: str | None = None,
@@ -56,6 +58,7 @@ def apply_baseline_w8a8(
     return apply_baseline_qdq(
         model,
         weight_quant_format="fp8_e4m3fn",
+        weight_group_size=weight_group_size,
         activation_quant_format=activation_quant_format,
         act_quant_mode=act_quant_mode,
         skip_module_names=skip_module_names,
@@ -69,6 +72,7 @@ def apply_baseline_qdq(
     *,
     weight_quant_format: QuantFormat = "int8",
     weight_quant_scheme: WeightQuantScheme | None = None,
+    weight_group_size: int | None = None,
     activation_quant_format: QuantFormat = "int8",
     act_quant_mode: ActQuantMode = "per_linear",
     skip_module_names: Iterable[str] = ("lm_head",),
@@ -85,6 +89,7 @@ def apply_baseline_qdq(
     """
     weight_format = validate_quant_format(weight_quant_format)
     weight_scheme = resolve_weight_quant_scheme(weight_format, weight_quant_scheme)
+    normalized_weight_group_size = normalize_weight_group_size(weight_group_size)
     activation_format = validate_quant_format(activation_quant_format)
     act_quant: ActQuant = "none" if activation_format == "none" else "per_token"
     _validate_act_quant_mode(act_quant=act_quant, act_quant_mode=act_quant_mode)
@@ -97,6 +102,7 @@ def apply_baseline_qdq(
         act_quant=act_quant,
         weight_quant_format=weight_format,
         weight_quant_scheme=weight_scheme,
+        weight_group_size=normalized_weight_group_size,
         activation_quant_format=activation_format,
         skip_names=skip_names,
         target_pattern=target_pattern,
@@ -180,6 +186,7 @@ def _replace_children_baseline(
     act_quant: ActQuant,
     weight_quant_format: QuantFormat,
     weight_quant_scheme: WeightQuantScheme,
+    weight_group_size: int | None,
     activation_quant_format: QuantFormat,
     skip_names: set[str],
     target_pattern: re.Pattern[str] | None,
@@ -212,6 +219,7 @@ def _replace_children_baseline(
                     act_quant=act_quant,
                     weight_quant_format=weight_quant_format,
                     weight_quant_scheme=weight_quant_scheme,
+                    weight_group_size=weight_group_size,
                     activation_quant_format=activation_quant_format,
                 ),
             )
@@ -224,6 +232,7 @@ def _replace_children_baseline(
             act_quant=act_quant,
             weight_quant_format=weight_quant_format,
             weight_quant_scheme=weight_quant_scheme,
+            weight_group_size=weight_group_size,
             activation_quant_format=activation_quant_format,
             skip_names=skip_names,
             target_pattern=target_pattern,

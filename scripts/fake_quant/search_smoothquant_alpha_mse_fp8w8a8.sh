@@ -4,7 +4,7 @@ set -euo pipefail
 # Search SmoothQuant alpha by local block-output reconstruction MSE.
 #
 # The search uses FP8-W/FP8-A, dynamic per-token activation QDQ, the
-# deployment-matched execution path, and one fixed AD calibration subset.
+# deployment-matched execution path, and one fixed task-specific calibration subset.
 # A no-SmoothQuant FP8 W8A8 RTN control is evaluated on the same block inputs.
 # It does not run recommendation generation/evaluation.
 #
@@ -12,6 +12,7 @@ set -euo pipefail
 #   GPU=0 bash scripts/fake_quant/search_smoothquant_alpha_mse_fp8w8a8.sh
 #
 # Common overrides:
+#   TASK=product GPU=5 bash scripts/fake_quant/search_smoothquant_alpha_mse_fp8w8a8.sh
 #   GPU=5 CALIB_SAMPLE_SIZE=128 ALPHAS=0,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1 #     bash scripts/fake_quant/search_smoothquant_alpha_mse_fp8w8a8.sh
 #   ALPHAS=0.35,0.4,0.45,0.5,0.55 OVERWRITE=1 #     bash scripts/fake_quant/search_smoothquant_alpha_mse_fp8w8a8.sh
 #

@@ -13,6 +13,7 @@ from ..quant import (
     ActQuant,
     QuantFormat,
     WeightQuantScheme,
+    normalize_weight_group_size,
     resolve_weight_quant_scheme,
     validate_quant_format,
     weight_per_output_channel_qdq_forward,
@@ -234,12 +235,14 @@ def smoothquant_quantized_module_from_scales(
     act_quant: ActQuant,
     weight_quant_format: QuantFormat = "fp8_e4m3fn",
     weight_quant_scheme: WeightQuantScheme | None = None,
+    weight_group_size: int | None = None,
     activation_quant_format: QuantFormat = "fp8_e4m3fn",
     smooth_scope: SmoothScope = DEFAULT_SMOOTH_SCOPE,
     folded_names: set[str] | None = None,
 ) -> tuple[nn.Module, int]:
     weight_format = validate_quant_format(weight_quant_format)
     weight_scheme = resolve_weight_quant_scheme(weight_format, weight_quant_scheme)
+    normalized_weight_group_size = normalize_weight_group_size(weight_group_size)
     activation_format = validate_quant_format(activation_quant_format)
     if act_quant == "none" and activation_format != "none":
         raise ValueError("activation_quant_format must be 'none' when act_quant='none'.")
@@ -256,6 +259,7 @@ def smoothquant_quantized_module_from_scales(
                 act_quant=act_quant,
                 weight_quant_format=weight_format,
                 weight_quant_scheme=weight_scheme,
+                weight_group_size=normalized_weight_group_size,
                 activation_quant_format=activation_format,
             ),
             1,
@@ -267,6 +271,7 @@ def smoothquant_quantized_module_from_scales(
         act_quant=act_quant,
         weight_quant_format=weight_format,
         weight_quant_scheme=weight_scheme,
+        weight_group_size=normalized_weight_group_size,
         activation_quant_format=activation_format,
         smooth_scope=smooth_scope,
         folded_names=folded_names or set(),
@@ -281,6 +286,7 @@ def _replace_children_smoothquant(
     act_quant: ActQuant,
     weight_quant_format: QuantFormat,
     weight_quant_scheme: WeightQuantScheme,
+    weight_group_size: int | None,
     activation_quant_format: QuantFormat,
     smooth_scope: SmoothScope,
     folded_names: set[str],
@@ -301,6 +307,7 @@ def _replace_children_smoothquant(
                     act_quant=act_quant,
                     weight_quant_format=weight_quant_format,
                     weight_quant_scheme=weight_quant_scheme,
+                    weight_group_size=weight_group_size,
                     activation_quant_format=activation_quant_format,
                     fold_activation=full_name in folded_names,
                 )
@@ -310,6 +317,7 @@ def _replace_children_smoothquant(
                     act_quant=act_quant,
                     weight_quant_format=weight_quant_format,
                     weight_quant_scheme=weight_quant_scheme,
+                    weight_group_size=weight_group_size,
                     activation_quant_format=activation_quant_format,
                 )
             setattr(module, child_name, replacement)
@@ -322,6 +330,7 @@ def _replace_children_smoothquant(
             act_quant=act_quant,
             weight_quant_format=weight_quant_format,
             weight_quant_scheme=weight_quant_scheme,
+            weight_group_size=weight_group_size,
             activation_quant_format=activation_quant_format,
             smooth_scope=smooth_scope,
             folded_names=folded_names,
@@ -336,6 +345,7 @@ def _smoothquant_fake_quant_linear(
     act_quant: ActQuant,
     weight_quant_format: QuantFormat,
     weight_quant_scheme: WeightQuantScheme,
+    weight_group_size: int | None,
     activation_quant_format: QuantFormat,
     fold_activation: bool = False,
 ) -> SmoothQuantFakeQuantLinear:
@@ -348,6 +358,7 @@ def _smoothquant_fake_quant_linear(
             scaled_weight,
             quant_format=weight_quant_format,
             quant_scheme=weight_quant_scheme,
+            group_size=weight_group_size,
         )
         bias = None if linear.bias is None else linear.bias.detach().clone()
         input_scale = None if fold_activation else scale.detach().cpu()
@@ -357,6 +368,7 @@ def _smoothquant_fake_quant_linear(
         act_quant=act_quant,
         input_scale=input_scale,
         weight_quant_format=weight_quant_format,
+        weight_group_size=weight_group_size,
         activation_quant_format=activation_quant_format,
     )
 

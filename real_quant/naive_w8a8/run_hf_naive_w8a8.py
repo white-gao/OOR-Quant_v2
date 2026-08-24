@@ -39,6 +39,7 @@ from .gptq_runtime import (
     parse_layer_indices,
 )
 from .modules import FP8_MAX, ActivationQuantMode, require_fp8_runtime, set_fp8_record_functions_enabled
+from real_quant.sharding import eval_run_output_dir, select_round_robin_eval_shard
 
 
 from fake_quant.gptq import (
@@ -269,6 +270,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--task", default="ad", choices=RECOMMENDATION_TASKS)
     parser.add_argument("--split", default="test")
     parser.add_argument("--sample_size", default="full")
+    parser.add_argument(
+        "--eval_num_shards",
+        type=int,
+        default=1,
+        help=(
+            "Split selected evaluation samples into this many deterministic "
+            "round-robin shards. Each shard must run in a separate process."
+        ),
+    )
+    parser.add_argument(
+        "--eval_shard_id",
+        type=int,
+        default=0,
+        help="Zero-based evaluation shard index used with --eval_num_shards.",
+    )
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--dtype", default="bfloat16")
     parser.add_argument("--batch_size", type=parse_batch_size_arg, default=1)
@@ -425,6 +441,20 @@ def _run_generation_with_optional_profiler(
 
 def main() -> None:
     args = parse_args()
+    if args.eval_num_shards <= 0:
+        raise ValueError(f"--eval_num_shards must be positive, got {args.eval_num_shards}.")
+    if args.eval_shard_id < 0 or args.eval_shard_id >= args.eval_num_shards:
+        raise ValueError(
+            "--eval_shard_id must be in "
+            f"[0, {args.eval_num_shards}), got {args.eval_shard_id}."
+        )
+    if args.eval_num_shards > 1 and args.evaluate:
+        raise ValueError(
+            "Do not pass --evaluate to an individual shard. Merge all shards with "
+            "python -m real_quant.merge_eval_shards, which computes metrics once."
+        )
+    if args.eval_num_shards > 1 and args.profile_fp8:
+        raise ValueError("--profile_fp8 is not supported during sharded evaluation.")
     if args.activation_quant_mode == "static" and args.static_activation_calib_samples <= 0:
         raise ValueError("--activation_quant_mode static requires --static_activation_calib_samples > 0.")
 
@@ -474,18 +504,46 @@ def main() -> None:
         gptaq_activation_aware=args.gptaq_activation_aware,
     )
     model_name = str(generator)
-    output_file = result_path(args.output_dir, model_name, args.task, args.split)
+    output_root = resolve_repo_path(args.output_dir)
+    run_output_dir = eval_run_output_dir(
+        output_root,
+        num_shards=args.eval_num_shards,
+        shard_id=args.eval_shard_id,
+    )
+    output_file = result_path(str(run_output_dir), model_name, args.task, args.split)
     if output_file.exists() and not args.overwrite:
         raise FileExistsError(f"Generation file exists: {output_file}. Use --overwrite.")
 
     sample_size = parse_sample_size(args.sample_size)
-    test_data = load_task_data(
+    unsharded_test_data = load_task_data(
         task_name=args.task,
         data_dir=str(resolve_repo_path(args.data_dir)),
         tokenizer=generator.tokenizer,
         split=args.split,
         sample_size=sample_size,
     )
+    unsharded_sample_count = len(unsharded_test_data)
+    test_data = select_round_robin_eval_shard(
+        unsharded_test_data,
+        num_shards=args.eval_num_shards,
+        shard_id=args.eval_shard_id,
+    )
+    if not test_data:
+        raise ValueError(
+            f"Evaluation shard {args.eval_shard_id}/{args.eval_num_shards} is empty; "
+            f"the selected evaluation set contains {unsharded_sample_count} samples."
+        )
+    shard_description = (
+        f" shard={args.eval_shard_id}/{args.eval_num_shards} "
+        f"samples={len(test_data)}/{unsharded_sample_count}"
+        if args.eval_num_shards > 1
+        else ""
+    )
+    if shard_description:
+        print(f"[hf_naive_w8a8] evaluation{shard_description}")
+    unsharded_prompts = {
+        sample_id: sample["prompt"] for sample_id, sample in unsharded_test_data.items()
+    }
     prompts = {sample_id: sample["prompt"] for sample_id, sample in test_data.items()}
     generation_kwargs = {
         "prompt_token": prompt_token,
@@ -499,7 +557,9 @@ def main() -> None:
     static_activation_summary = None
     if args.activation_quant_mode == "static":
         calib_split = args.static_activation_calib_split
-        calib_prompts = prompts
+        # Every shard must derive identical static scales. When calibration
+        # uses the eval split, collect from the original unsharded prefix.
+        calib_prompts = unsharded_prompts
         if calib_split is not None and calib_split != args.split:
             calib_size = parse_sample_size(str(args.static_activation_calib_samples))
             calib_data = load_task_data(
@@ -546,6 +606,12 @@ def main() -> None:
         "split": args.split,
         "data_dir": args.data_dir,
         "sample_size": args.sample_size,
+        "eval_num_shards": args.eval_num_shards,
+        "eval_shard_id": args.eval_shard_id,
+        "eval_shard_strategy": "round_robin",
+        "eval_unsharded_sample_count": unsharded_sample_count,
+        "eval_shard_sample_count": len(test_data),
+        "eval_merged": False,
         "dtype": args.dtype,
         "device": args.device,
         "batch_size": batch_size,

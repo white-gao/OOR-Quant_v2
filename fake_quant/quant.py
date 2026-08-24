@@ -70,6 +70,22 @@ def resolve_weight_quant_scheme(
     return "asymmetric" if quant_scheme is None else quant_scheme
 
 
+def normalize_weight_group_size(group_size: int | None) -> int | None:
+    """Normalize the weight grouping granularity.
+
+    ``None`` and ``0`` retain the existing per-output-channel quantization.
+    A positive value splits each output-channel row into consecutive groups
+    along the Linear ``in_features`` dimension.
+    """
+    if group_size is None or group_size == 0:
+        return None
+    if isinstance(group_size, bool) or not isinstance(group_size, int):
+        raise TypeError("weight group size must be an integer, 0, or None.")
+    if group_size < 0:
+        raise ValueError("weight group size must be positive, 0, or None.")
+    return group_size
+
+
 def quant_format_bits(quant_format: str) -> int | None:
     """Return the storage precision of a QDQ format, or ``None`` for BF16/FP16."""
     normalized = validate_quant_format(quant_format)
@@ -287,50 +303,113 @@ def weight_per_output_channel_qdq_forward(
     *,
     quant_format: QuantFormat = "int8",
     quant_scheme: WeightQuantScheme | None = None,
+    group_size: int | None = None,
     eps: float = 1e-12,
     fp8_qmax: float = FP8_MAX,
 ) -> torch.Tensor:
-    """QDQ Linear weights per output channel for an arbitrary fake format.
+    """QDQ Linear weights per output channel, optionally with finer groups.
 
     Integer formats default to affine asymmetric min-max quantization. Pass
     quant_scheme="symmetric" for a zero-centered control experiment.
+
+    With ``group_size=None`` (or ``0``), every output-channel row shares one
+    scale/zero point, matching the historical behavior. With a positive group
+    size, each row is split into consecutive groups along ``in_features`` and
+    every ``(output_channel, input_group)`` receives independent parameters,
+    matching the group-wise convention used by AWQ and OmniQuant.
     """
     if weight.ndim != 2:
         raise ValueError(f"Expected 2D Linear weight, got shape {tuple(weight.shape)}")
+    normalized_group_size = normalize_weight_group_size(group_size)
     normalized = validate_quant_format(quant_format)
     if normalized == "none":
         return weight
     scheme = resolve_weight_quant_scheme(normalized, quant_scheme)
+
+    grouped_weight = weight
+    valid_mask: torch.Tensor | None = None
+    original_in_features = int(weight.shape[1])
+    padded_in_features = original_in_features
+    reduce_dim = 1
+    if normalized_group_size is not None:
+        num_groups = (
+            original_in_features + normalized_group_size - 1
+        ) // normalized_group_size
+        padded_in_features = num_groups * normalized_group_size
+        padding = padded_in_features - original_in_features
+        if padding:
+            grouped_weight = torch.cat(
+                (
+                    weight,
+                    torch.zeros(
+                        (weight.shape[0], padding),
+                        dtype=weight.dtype,
+                        device=weight.device,
+                    ),
+                ),
+                dim=1,
+            )
+        grouped_weight = grouped_weight.reshape(
+            weight.shape[0], num_groups, normalized_group_size
+        )
+        if padding:
+            valid_mask = (
+                torch.arange(padded_in_features, device=weight.device)
+                .lt(original_in_features)
+                .reshape(1, num_groups, normalized_group_size)
+            )
+        reduce_dim = 2
+
     if scheme == "asymmetric":
-        weight_float = weight.detach().float()
-        upper = weight_float.amax(dim=1, keepdim=True)
-        lower = weight_float.amin(dim=1, keepdim=True)
+        weight_float = grouped_weight.detach().float()
+        if valid_mask is None:
+            upper = weight_float.amax(dim=reduce_dim, keepdim=True)
+            lower = weight_float.amin(dim=reduce_dim, keepdim=True)
+        else:
+            upper = weight_float.masked_fill(~valid_mask, -torch.inf).amax(
+                dim=reduce_dim, keepdim=True
+            )
+            lower = weight_float.masked_fill(~valid_mask, torch.inf).amin(
+                dim=reduce_dim, keepdim=True
+            )
         bits = quant_format_bits(normalized)
         assert bits in (4, 6, 8)
         qmax = float((1 << bits) - 1)
         scale = ((upper - lower) / qmax).clamp_min(eps)
         zero_point = -torch.round(lower / scale)
-        return int_asymmetric_qdq_forward(
-            weight,
+        weight_qdq = int_asymmetric_qdq_forward(
+            grouped_weight,
             scale,
             zero_point,
             bits=cast(Literal[4, 6, 8], bits),
             eps=eps,
         )
-    scale = _absmax_scale(
-        weight,
-        dim=1,
-        keepdim=True,
-        quant_format=normalized,
-        eps=eps,
-        fp8_qmax=fp8_qmax,
-    )
-    return qdq_forward(
-        weight,
-        scale,
-        quant_format=normalized,
-        eps=eps,
-        fp8_qmax=fp8_qmax,
+    else:
+        scale = _absmax_scale(
+            grouped_weight,
+            dim=reduce_dim,
+            keepdim=True,
+            quant_format=normalized,
+            eps=eps,
+            fp8_qmax=fp8_qmax,
+        )
+        weight_qdq = qdq_forward(
+            grouped_weight,
+            scale,
+            quant_format=normalized,
+            eps=eps,
+            fp8_qmax=fp8_qmax,
+        )
+
+    if normalized_group_size is None:
+        return weight_qdq
+    restored = weight_qdq.reshape(weight.shape[0], padded_in_features)[
+        :, :original_in_features
+    ]
+    return (
+        restored
+        if padded_in_features == original_in_features
+        else restored.contiguous()
     )
 
 
