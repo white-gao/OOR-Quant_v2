@@ -13,7 +13,7 @@ real_quant/naive_w8a8/  executable real FP8 W8A8 baseline and FP8 PTQ variants
 fake_quant/             composable FP8/INT8/INT4 QDQ quality experiments
 benchmarks/             recommendation and general-capability evaluators
 scripts/                serial experiment launchers
-artifacts/              git-ignored models, data, and results
+artifacts/              Git-ignored generated results
 ```
 
 New outputs belong under `artifacts/results/`; see
@@ -28,9 +28,12 @@ that supports FP8 `torch._scaled_mm`.
 python -c "import torch; print(torch.__version__); print(torch.cuda.get_device_name(0)); print(hasattr(torch, '_scaled_mm'))"
 ```
 
-The default model and data locations are `artifacts/models/1.7B` and
-`artifacts/data/onerec_data/benchmark_data`. Calibration and test
-splits must remain separate.
+The server defaults are `/root/dataDisk/guowei/models/1.7B` and
+`/root/dataDisk/guowei/data/onerec_data/benchmark_data`. Calibration and test
+splits must remain separate. Override the defaults with
+`OOR_QUANT_MODEL_ROOT`, `OOR_QUANT_DATA_ROOT`, or the direct
+`OOR_QUANT_BENCHMARK_DATA` path. Generated outputs remain controlled by
+`OOR_QUANT_ARTIFACTS` (default: `<repo>/artifacts`).
 
 ## Real FP8 runner
 
@@ -50,7 +53,7 @@ Example: plain GPTQ W8A8 on the AD domain.
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 python -m real_quant.naive_w8a8.run_hf_naive_w8a8 \
-  --model_path artifacts/models/1.7B \
+  --model_path /root/dataDisk/guowei/models/1.7B \
   --task ad \
   --weight_quant_mode gptq \
   --gptq_calib_sample_size 128 \
@@ -68,7 +71,7 @@ Algorithm comparisons should use the same decode setting for every method.
 ```bash
 python -m fake_quant.run_m1_onerec_ad \
   --mode baseline_qdq \
-  --model_path artifacts/models/1.7B \
+  --model_path /root/dataDisk/guowei/models/1.7B \
   --task ad \
   --weight_quant_format int4 \
   --activation_quant_format int8 \

@@ -20,10 +20,11 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 cd "${REPO_ROOT}"
 
 ARTIFACTS_ROOT="${OOR_QUANT_ARTIFACTS:-${REPO_ROOT}/artifacts}"
+MODEL_ROOT="${OOR_QUANT_MODEL_ROOT:-/root/dataDisk/guowei/models}"
 REAL_RESULTS_ROOT="${ARTIFACTS_ROOT}/results/real_quant"
 
 PYTHON_BIN="${PYTHON_BIN:-python}"
-MODEL_PATH="${MODEL_PATH:-${ARTIFACTS_ROOT}/models/8B}"
+MODEL_PATH="${MODEL_PATH:-${MODEL_ROOT}/8B}"
 DEVICE="${DEVICE:-cuda:7}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-${REAL_RESULTS_ROOT}/generic/8b_generic_benchmark_suite}"
 OVERWRITE="${OVERWRITE:-0}"

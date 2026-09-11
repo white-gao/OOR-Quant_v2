@@ -10,7 +10,8 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 cd "${REPO_ROOT}"
 
 ARTIFACTS_ROOT="${OOR_QUANT_ARTIFACTS:-${REPO_ROOT}/artifacts}"
-MODEL_PATH="${MODEL_PATH:-${ARTIFACTS_ROOT}/models/1.7B}"
+MODEL_ROOT="${OOR_QUANT_MODEL_ROOT:-/root/dataDisk/guowei/models}"
+MODEL_PATH="${MODEL_PATH:-${MODEL_ROOT}/1.7B}"
 DEVICE="${DEVICE:-cuda:7}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-${ARTIFACTS_ROOT}/results/fake_quant/generic/wikitext2_1p7b_qdq_precision_sweep}"
 

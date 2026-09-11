@@ -8,7 +8,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from fake_quant.modules import BaselineFakeQuantLinear
+from fake_quant.modules import BaselineFakeQuantLinear, OmniQuantFakeQuantLinear
 from fake_quant.omniquant.runtime import (
     DEFAULT_OMNIQUANT_EPOCHS,
     OMNIQUANT_CALIBRATION_FORWARD_MODE,
@@ -86,12 +86,13 @@ class _TinyDecoderBlock(nn.Module):
         return (hidden_states,)
 
 
-def _config(*, use_let: bool) -> OmniQuantConfig:
+def _config(*, use_let: bool, weight_group_size: int = 0) -> OmniQuantConfig:
     return OmniQuantConfig(
         weight_quant_format="int4",
         activation_quant_format="int8",
         weight_quant_scheme="asymmetric",
         use_lwc=True,
+        weight_group_size=weight_group_size,
         use_let=use_let,
         learn_let=use_let,
         let_init="ones",
@@ -114,6 +115,25 @@ class DeploymentMatchedFakeQuantTest(unittest.TestCase):
         self.assertEqual(config.weight_decay, 0.0)
         self.assertIsNone(config.max_grad_norm)
 
+    def test_boundary_only_requires_a_positive_boundary_weight(self) -> None:
+        boundary_only = OmniQuantConfig(
+            final_objective="lfq_ce",
+            lfq_loss_weight=0.0,
+            lfq_boundary_loss_weight=1.0,
+        )
+        boundary_only.validate()
+
+        missing_objective = OmniQuantConfig(
+            final_objective="lfq_ce",
+            lfq_loss_weight=0.0,
+            lfq_boundary_loss_weight=0.0,
+        )
+        with self.assertRaisesRegex(
+            ValueError,
+            "lfq_loss_weight or lfq_boundary_loss_weight",
+        ):
+            missing_objective.validate()
+
     def test_repository_contract_and_baseline_operator_dtype(self) -> None:
         self.assertEqual(FAKE_QUANT_FORWARD_MODE, "deployment_matched")
         self.assertEqual(OMNIQUANT_CALIBRATION_FORWARD_MODE, FAKE_QUANT_FORWARD_MODE)
@@ -130,9 +150,18 @@ class DeploymentMatchedFakeQuantTest(unittest.TestCase):
         self.assertEqual(wrapped.quantize_activation(x).dtype, torch.bfloat16)
         self.assertEqual(wrapped(x).dtype, torch.bfloat16)
 
-    def _assert_train_finalize_match(self, *, use_let: bool) -> None:
+    def _assert_train_finalize_match(
+        self,
+        *,
+        use_let: bool,
+        weight_group_size: int = 0,
+    ) -> None:
         block = _TinyDecoderBlock().to(dtype=torch.bfloat16)
-        train_block = _TrainableOmniBlock(block, config=_config(use_let=use_let), init_scales={})
+        train_block = _TrainableOmniBlock(
+            block,
+            config=_config(use_let=use_let, weight_group_size=weight_group_size),
+            init_scales={},
+        )
         self.assertEqual(train_block.calibration_dtype, torch.bfloat16)
         for child in train_block.block.modules():
             if isinstance(child, _TrainableSymmetricLinear):
@@ -167,6 +196,14 @@ class DeploymentMatchedFakeQuantTest(unittest.TestCase):
             )
 
         finalized, replaced = _finalize_block(train_block)
+        finalized_linears = [
+            child
+            for child in finalized.modules()
+            if isinstance(child, OmniQuantFakeQuantLinear)
+        ]
+        self.assertEqual(len(finalized_linears), 7)
+        expected_group_size = weight_group_size or None
+        self.assertTrue(all(child.weight_group_size == expected_group_size for child in finalized_linears))
         self.assertEqual(replaced, 7)
         with torch.no_grad():
             final_output = _first_tensor(finalized(x))
@@ -178,6 +215,9 @@ class DeploymentMatchedFakeQuantTest(unittest.TestCase):
 
     def test_let_train_wrapper_matches_finalized_block(self) -> None:
         self._assert_train_finalize_match(use_let=True)
+
+    def test_groupwise_lwc_train_wrapper_matches_finalized_block(self) -> None:
+        self._assert_train_finalize_match(use_let=False, weight_group_size=3)
 
     def test_lfq_projector_executes_model_dtype_and_loss_uses_fp32(self) -> None:
         norm = _TinyRMSNorm(8).to(dtype=torch.bfloat16)
@@ -276,7 +316,7 @@ class DeploymentMatchedFakeQuantTest(unittest.TestCase):
             )
         )
 
-    def test_lfq_boundary_full_training_path(self) -> None:
+    def test_boundary_only_full_training_path(self) -> None:
         teacher_block = _TinyDecoderBlock().to(dtype=torch.bfloat16)
         config = OmniQuantConfig(
             weight_quant_format="int4",
@@ -286,6 +326,7 @@ class DeploymentMatchedFakeQuantTest(unittest.TestCase):
             use_let=False,
             learn_let=False,
             final_objective="lfq_ce",
+            lfq_loss_weight=0.0,
             lfq_boundary_loss_weight=0.1,
             lfq_boundary_topk=2,
             lfq_boundary_negative_count=2,
@@ -324,6 +365,26 @@ class DeploymentMatchedFakeQuantTest(unittest.TestCase):
         self.assertEqual(len(epoch_metrics), 2)
         self.assertIsNotNone(epoch_metrics[-1].train_lfq_boundary_loss)
         self.assertIsNotNone(epoch_metrics[-1].validation_lfq_boundary_loss)
+
+    def test_groupwise_checkpoint_rejects_per_channel_configuration(self) -> None:
+        config = _config(use_let=False, weight_group_size=3)
+        incompatible_state = {
+            "config": {
+                "weight_quant_format": config.weight_quant_format,
+                "activation_quant_format": config.activation_quant_format,
+                "weight_quant_scheme": config.weight_quant_scheme,
+                "weight_group_size": 0,
+            },
+            "objective": "mse",
+        }
+        with self.assertRaisesRegex(ValueError, "weight_group_size"):
+            _validate_omniquant_checkpoint(
+                incompatible_state,
+                checkpoint_path=Path("per_channel_layer.pt"),
+                config=config,
+                expected_objective="mse",
+                require_run_objective=False,
+            )
 
     def test_legacy_fp32_surrogate_checkpoint_is_rejected(self) -> None:
         config = _config(use_let=False)

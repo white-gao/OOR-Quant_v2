@@ -18,7 +18,7 @@ for path in (PROJECT_ROOT, BENCHMARK_ROOT):
 
 from benchmark import Benchmark  # noqa: E402
 from benchmark.tasks.v1_0.registry import get_loader, get_task_config  # noqa: E402
-from shared.paths import data_root, model_root, real_results_root  # noqa: E402
+from shared.paths import benchmark_data_root, model_root, real_results_root  # noqa: E402
 
 from .generator import HFFullPrecisionGenerator  # noqa: E402
 from .results import build_generation_payload, save_generation_payload  # noqa: E402
@@ -27,7 +27,7 @@ from .results import build_generation_payload, save_generation_payload  # noqa: 
 T = TypeVar("T")
 BatchSizeArg = int | Literal["auto"]
 DEFAULT_MODEL_PATH = str(model_root() / "1.7B")
-DEFAULT_DATA_DIR = str(data_root() / "onerec_data" / "benchmark_data")
+DEFAULT_DATA_DIR = str(benchmark_data_root())
 DEFAULT_OUTPUT_DIR = str(real_results_root() / "recommender" / "bf16")
 RECOMMENDATION_TASKS = ("ad", "product", "video", "label_cond", "interactive")
 

@@ -18,13 +18,16 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 cd "${REPO_ROOT}"
 
 ARTIFACTS_ROOT="${OOR_QUANT_ARTIFACTS:-${REPO_ROOT}/artifacts}"
+MODEL_ROOT="${OOR_QUANT_MODEL_ROOT:-/root/dataDisk/guowei/models}"
+DATA_ROOT="${OOR_QUANT_DATA_ROOT:-/root/dataDisk/guowei/data}"
+BENCHMARK_DATA_DIR="${OOR_QUANT_BENCHMARK_DATA:-${DATA_ROOT}/onerec_data/benchmark_data}"
 FAKE_RESULTS_ROOT="${ARTIFACTS_ROOT}/results/fake_quant"
 
 MODE="${MODE:-baseline_qdq}"  # baseline_qdq, baseline_w8a8, smoothquant_w8a8, or gptq_fp8_w8a8
 WEIGHT_QUANT_FORMAT="${WEIGHT_QUANT_FORMAT:-int8}"
 ACTIVATION_QUANT_FORMAT="${ACTIVATION_QUANT_FORMAT:-int8}"
-MODEL_PATH="${MODEL_PATH:-${ARTIFACTS_ROOT}/models/1.7B}"
-DATA_DIR="${DATA_DIR:-${ARTIFACTS_ROOT}/data/onerec_data/benchmark_data}"
+MODEL_PATH="${MODEL_PATH:-${MODEL_ROOT}/1.7B}"
+DATA_DIR="${DATA_DIR:-${BENCHMARK_DATA_DIR}}"
 OUTPUT_DIR="${OUTPUT_DIR:-}"
 RUN_NAME="${RUN_NAME:-}"
 

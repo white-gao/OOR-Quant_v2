@@ -27,8 +27,8 @@ AD full precision, one GPU:
 
 ```bash
 PYTHONPATH=. python3 -m real_quant.full_precision.run_hf_baseline \
-  --model_path artifacts/models/1.7B \
-  --data_dir artifacts/data/onerec_data/benchmark_data \
+  --model_path /root/dataDisk/guowei/models/1.7B \
+  --data_dir /root/dataDisk/guowei/data/onerec_data/benchmark_data \
   --output_dir artifacts/results/real_quant/recommender/bf16/ad_1p7b_bf16 \
   --task ad \
   --device cuda:0 \
@@ -89,7 +89,7 @@ QDQ format pair explicitly:
 
 ```bash
 python -m real_quant.full_precision.run_ppl_benchmark \
-  --model_path artifacts/models/1.7B \
+  --model_path /root/dataDisk/guowei/models/1.7B \
   --dataset c4 \
   --device cuda:7 \
   --quantization fake_qdq \

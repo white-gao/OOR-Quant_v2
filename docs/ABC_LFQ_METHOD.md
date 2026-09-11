@@ -362,8 +362,8 @@ ABC-LFQ 不对齐完整路径概率、beam 内候选并集、top-32 截断边界
 1. 最后 block 的 logit-aware 对齐方向成立，至少在 W4A8 上稳定优于同 prefix 的 MSE-LWC；
 2. calibration 数量对 ABC-LFQ 的影响明显大于对传统逐层 MSE 的影响；
 3. 当前主要瓶颈更可能是条件前缀覆盖与 slot 梯度冲突，而不是 CE/KL 的数学形式；
-4. 在完成 `1024 calib × 5 epochs` 的全量评测前，不应同时引入新 loss，以免混淆 calibration diversity 与目标调整的贡献；
-5. 若继续改目标，优先考虑基于梯度范数的 slot balance 或带验证集的 checkpoint selection，再考虑 teacher-prefix chain KL。
+4. boundary 项必须在 deployment-matched FP4-W/FP8-A 路径上，与同 prefix、同最后层初始化的 MSE-LWC 和原 ABC-LFQ 做严格三组对照；
+5. 先用固定 held-out 512 检查 CE/KL、top-32 保留和越界，再决定是否进入 AD-3000 和 AD-full，避免用 test 指标反向选择 boundary 系数。
 
 ## 12. 实现与相关文档
 
@@ -376,6 +376,7 @@ ABC-LFQ 不对齐完整路径概率、beam 内候选并集、top-32 截断边界
 
 相关诊断：
 
+- [Boundary loss 核心公式](ABC_LFQ_BOUNDARY_FORMULA.md)
 - [SID-A LFQ 512-sample diagnostics](SID_A_LFQ_512_DIAGNOSTICS.md)
 - [SID-B/C conditional KL diagnostics](SID_BC_CONDITIONAL_KL_512_DIAGNOSTICS.md)
 - [SID-A/B/C ABC-LFQ diagnostics](SID_ABC_LFQ_512_DIAGNOSTICS.md)
@@ -383,8 +384,12 @@ ABC-LFQ 不对齐完整路径概率、beam 内候选并集、top-32 截断边界
 - [Beam prefix survival probe](BEAM_PREFIX_SURVIVAL_PROBE.md)
 - [Beam margin probe](BEAM_MARGIN_256_PROBE.md)
 
-当前 `1024 calib × 5 epochs` 串行优化与四卡评测脚本：
+当前 FP4-W/FP8-A、prefix128/final-train512/held-out512 的三组受控训练与
+诊断脚本：
 
 ```bash
-bash scripts/fake_quant/run_1p7b_ad_full_w4a8_lfq_abc_calib1024_ep5_cuda4567.sh
+GPUS=6,7 bash scripts/fake_quant/run_1p7b_ad_fp4w_fp8a_lwc_abc_boundary_calib1024.sh
 ```
+
+共享 prefix 在首卡完成后，三个最后层分支会按 `GPUS` 轮转并行。
+独立诊断实现位于 `fake_quant/evaluate_lfq_boundary_diagnostics.py`。

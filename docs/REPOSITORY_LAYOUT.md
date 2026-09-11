@@ -19,12 +19,15 @@ Launchers live only in `scripts/real_quant/` and `scripts/fake_quant/`.
 
 ## Artifact root
 
-All generated or large files belong below `artifacts/` (Git ignored):
+Generated results belong below `artifacts/` (Git ignored). Reusable models and
+data live on the server data disk:
 
 ```text
+/root/dataDisk/guowei/
+├── models/                 # 1.7B and 8B checkpoints
+└── data/onerec_data/benchmark_data/
+
 artifacts/
-├── models/                 # local 1.7B and 8B checkpoints
-├── data/                   # local OneRec data
 └── results/
     ├── real_quant/
     │   ├── recommender/    # retained BF16 / RTN / plain GPTQ/GPTAQ runs
@@ -33,9 +36,11 @@ artifacts/
     └── fake_quant/         # fake-QDQ / OmniQuant recommender and generic runs
 ```
 
-Set `OOR_QUANT_ARTIFACTS=/absolute/path` before a run to place this entire tree
-on another filesystem.  `shared.paths` is the single Python source of truth;
-new code should not introduce another hard-coded `*/results` default.
+Use `OOR_QUANT_MODEL_ROOT` and `OOR_QUANT_DATA_ROOT` to replace the two server
+roots, or `OOR_QUANT_BENCHMARK_DATA` to replace the benchmark directory
+directly. `OOR_QUANT_ARTIFACTS` only relocates generated outputs. `shared.paths`
+is the Python source of truth, and shell launchers mirror these defaults while
+retaining the same environment-variable overrides.
 
 ## Retained result set — 2026-07-24
 

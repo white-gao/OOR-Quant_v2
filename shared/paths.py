@@ -1,10 +1,4 @@
-"""Canonical, overridable locations for non-source project artifacts.
-
-Keeping models, datasets, and experiment outputs under one ignored root makes
-the source tree portable and prevents real-quant and fake-quant results from
-being mixed accidentally.  Set ``OOR_QUANT_ARTIFACTS`` to place these files on
-another filesystem; by default they live in ``<repo>/artifacts``.
-"""
+"""Canonical, overridable locations for models, data, and experiment outputs."""
 
 from __future__ import annotations
 
@@ -13,6 +7,7 @@ from pathlib import Path
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
+_SERVER_STORAGE_ROOT = Path("/root/dataDisk/guowei")
 
 
 def repo_root() -> Path:
@@ -22,7 +17,7 @@ def repo_root() -> Path:
 
 
 def artifacts_root() -> Path:
-    """Return the root for ignored, potentially large project artifacts."""
+    """Return the root for generated, Git-ignored experiment artifacts."""
 
     configured = os.environ.get("OOR_QUANT_ARTIFACTS")
     return Path(configured).expanduser() if configured else repo_root() / "artifacts"
@@ -53,12 +48,23 @@ def benchmark_results_root() -> Path:
 
 
 def model_root() -> Path:
-    """Root reserved for local model checkpoints."""
+    """Return the root containing reusable model checkpoints."""
 
-    return artifacts_path("models")
+    configured = os.environ.get("OOR_QUANT_MODEL_ROOT")
+    return Path(configured).expanduser() if configured else _SERVER_STORAGE_ROOT / "models"
 
 
 def data_root() -> Path:
-    """Root reserved for local datasets."""
+    """Return the root containing reusable datasets."""
 
-    return artifacts_path("data")
+    configured = os.environ.get("OOR_QUANT_DATA_ROOT")
+    return Path(configured).expanduser() if configured else _SERVER_STORAGE_ROOT / "data"
+
+
+def benchmark_data_root() -> Path:
+    """Return the OpenOneRec benchmark-data directory."""
+
+    configured = os.environ.get("OOR_QUANT_BENCHMARK_DATA")
+    if configured:
+        return Path(configured).expanduser()
+    return data_root() / "onerec_data" / "benchmark_data"

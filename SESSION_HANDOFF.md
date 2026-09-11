@@ -30,7 +30,7 @@ scripts/fake_quant/         fake-quant 串行实验入口
 scripts/real_quant/         real-quant 串行实验入口
 shared/                     模型、数据和结果路径的统一定义
 docs/              研究表格与保留的 probe 总结
-artifacts/                  模型、数据、结果和探测归档（Git 忽略）
+artifacts/                  生成结果与探测产物（Git 忽略）
 ```
 
 实验 launcher 只保留在 `scripts/` 下。重复脚本、decode-A16 fake-quant
@@ -60,14 +60,14 @@ artifacts/archives/onerec_weight_activation_probes.tar.gz
 默认模型：
 
 ```text
-artifacts/models/1.7B
-artifacts/models/8B
+/root/dataDisk/guowei/models/1.7B
+/root/dataDisk/guowei/models/8B
 ```
 
 推荐任务今后统一使用：
 
 ```text
-artifacts/data/onerec_data/benchmark_data
+/root/dataDisk/guowei/data/onerec_data/benchmark_data
 ```
 
 不要再使用旧的 `benchmark-data-calib1024`。该目录下 calibration 与 test 是
@@ -190,11 +190,14 @@ A/B/C 分 slot 诊断。该实现只保护 teacher top-32 与 ranks 33–64 的�
 ```text
 fake_quant/omniquant/runtime.py
 fake_quant/run_m1_onerec_ad.py
+fake_quant/evaluate_lfq_boundary_diagnostics.py
+scripts/fake_quant/run_1p7b_ad_fp4w_fp8a_lwc_abc_boundary_calib1024.sh
 tests/test_fake_quant_deployment_matched.py
+tests/test_lfq_boundary_diagnostics.py
 ```
 
 已验证：核心文件 `py_compile` 通过，`python -m unittest discover -s tests`
-24/24 通过，pytest 27/27 通过；小型端到端训练测试能产生非空 train/validation boundary 诊断。
+30/30 通过，pytest 33/33 通过；小型端到端训练测试能产生非空 train/validation boundary 诊断。
 尚未进行真实模型 calibration 或推荐测评。
 
 ### Asymmetric LWC 的当前实现
@@ -228,16 +231,22 @@ W_qdq = (Q - zero_point) * scale
 需要复现历史 symmetric INT 结果时，必须显式写
 `--weight_quant_scheme symmetric`。
 
-### Group-wise 权重量化（RTN / SmoothQuant）
+### Group-wise 权重量化（RTN / SmoothQuant / OmniQuant-LWC）
 
-RTN 与 SmoothQuant 现在支持 `--weight_group_size G`。这里的 group 位于每个
-output-channel 行内部，沿 Linear 的 `in_features` 连续分组；每个
+RTN、SmoothQuant 与 OmniQuant-LWC 支持 `--weight_group_size G`。这里的
+group 位于每个 output-channel 行内部，沿 Linear 的 `in_features` 连续分组；每个
 `(output_channel, input_group)` 独立计算 scale/zero point。`G=0` 或 `None`
 严格保留历史 per-output-channel 路径，尾部不足一个 group 时 asymmetric 路径
-用 mask 排除 padding。该接口暂未接入 OmniQuant/LWC。
+用 mask 排除 padding。
+
+OmniQuant-LWC 在每组上独立学习 clipping：symmetric INT/FP 每组一个 logit，
+asymmetric INT 每组一对 upper/lower logits；每组由学习后的范围独立产生 scale
+（以及 asymmetric zero point）。checkpoint 会记录 `weight_group_size`，旧
+per-channel checkpoint 缺失该字段时按 `0` 兼容恢复。
 
 支持链路包括 `fake_quant.quant`、普通 RTN wrapper、SmoothQuant fold/runtime、
-CLI metadata 和测试。正式 W4A8 per-channel/g128 串行全量 launcher 为：
+OmniQuant train/finalize/checkpoint、CLI metadata 和测试。正式 W4A8
+per-channel/g128 串行全量 launcher 为：
 
 ```text
 scripts/fake_quant/run_1p7b_ad_full_fp4w_fp8a_rtn_pc_g128_cuda0123.sh
@@ -296,6 +305,43 @@ scripts/fake_quant/run_1p7b_ad_full_fp4w_fp8a_rtn_pc_g128_cuda0123.sh
 INT4-W/BF16-A 27.22；GSM8K 从 67.17% 降到 INT4-W/FP8-A 47.99%。因此低比特
 并非只损害推荐任务，但推荐 SID 指标对 naive INT4 的崩塌尤其明显。
 
+## Group-wise OmniQuant-LWC（2026-08-25）
+
+FP symmetric LWC 已支持标准 weight group-wise 截断：`weight_group_size=128`
+时，每个 output channel 的每个连续 128-input 权重组分别学习 clipping
+参数；尾组显式屏蔽 padding，checkpoint 与 run config 都记录 group size。
+
+首个受控实验入口为：
+
+```text
+scripts/fake_quant/run_1p7b_ad_fp4w_fp8a_groupwise_g128_lwc_abc_boundary.sh
+```
+
+它只训练 g128 的 ABC-CE + 0.3 boundary 组：Layer 0--26 使用 calib 前
+128 条，Layer 27 使用前 512 条训练。训练后自动在未参与反向传播的后 512
+条上输出 A/B/C 的 CE、KL、top-1 一致率、top-5/10/32 保留率、越界率及
+near/far intruder rate，并写入同一 `RUN_ROOT` 下的 JSON；可用
+`RUN_HELDOUT_DIAGNOSTICS=0` 关闭。诊断入口新增 single-checkpoint 模式，
+原三组受控比较模式保持不变。
+
+g128 实验已完成，并与相同协议的 per-channel ABC+0.3 boundary 对齐：
+Layer 26 prefix MSE 从 76.2231 降到 36.6217；held-out512 macro CE 从
+4.3671 降到 3.9436，top-1 从 59.31% 升到 72.98%，top-32 从 60.89%
+升到 69.42%，boundary violation 从 21.24% 降到 15.78%。A/B/C 三个
+slot 均同向改善。需要保留的反例是 Layer 27 在 ABC+boundary 优化后
+block MSE 从 88.55 上升到 246.94，说明任务目标仍会牺牲全局重构。
+
+下一轮六组 AD-full 核心矩阵入口为：
+
+```text
+scripts/fake_quant/run_1p7b_ad_full_w4w8a8_g128_core6_cuda67.sh
+```
+
+它对 W4A8/W8A8 分别运行 RTN-g128、MSE-LWC-g128 和
+ABC+0.3-boundary-g128。两个 learned arm 共享各自的 prefix，Layer 27
+使用完整 calib1024；W4 默认复用上述已完成 prefix，最后层两分支分配到
+前两张 GPU 并行训练，六组 AD-full 评测完成后写出统一汇总 JSON。
+
 ## 当前下一步（2026-08-24）
 
 旧 INT4-W/INT8-A ABC-LFQ 实验表明：在旧数值路径下，最后一层的
@@ -303,15 +349,27 @@ calibration 从 128 增加到 512/1024，并给予足够 epoch 时，AD-full
 推荐指标整体改善。但这些 checkpoint 早于当前 deployment-matched
 训练语义，只能作为历史趋势，不能与新 boundary loss 做严格对照。
 
-下一轮不重跑旧 INT sweep，而在当前代码下新建 FP W4A8 受控对比：
+下一轮不重跑旧 INT sweep，而在当前代码下进行 FP W4A8 三组受控对比：
 
-1. 重新训练 FP4-E2M1-W/FP8-E4M3-A 的 LWC-only prefix；
-2. 从同一 prefix 和最后一层初始点分出原 ABC-LFQ 与
-   `ABC-LFQ + boundary` 两组；
-3. 两组使用同一 calibration/validation 划分、epoch、seed 与 slot 权重；
+1. 使用 calibration 的前 128 条重新训练 FP4-E2M1-W/FP8-E4M3-A 的
+   LWC-only Layer 0--26 prefix；
+2. 从同一 prefix 和最后一层初始点分出 MSE-LWC control、原 ABC-LFQ 与
+   `ABC-LFQ + boundary` 三组；
+3. 三个 Layer 27 分支使用同一 train512/held-out512 划分、epoch、seed；
+   两个 LFQ 分支额外保持相同 slot 权重；
 4. 先在独立 512 条样本上检查 ABC KL/CE、teacher top-32 保留率与越界率，
    再进入 AD-3000，只在两者都正向时跑 AD-full；
 5. FP W4A8 成立后再迁移至 FP W8A8，检查高精度场景是否也有收益。
+
+上述训练与 held-out 诊断已经固化到：
+
+```text
+scripts/fake_quant/run_1p7b_ad_fp4w_fp8a_lwc_abc_boundary_calib1024.sh
+```
+
+launcher 先在 `GPUS` 首卡训练共享 prefix，再将三个最后层分支轮转分配到多卡，
+全部完成后回到首卡执行 held-out 诊断。单卡模式仍受支持。
+脚本和自动协议校验已通过 dry-run 与完整测试，但尚未启动真实 1.7B calibration。
 
 FP LWC 是 symmetric 单截断参数，可调空间小于旧 INT asymmetric
 双边 LWC。若 boundary proxy 能改善而推荐指标不变，应优先怀疑最后一层
@@ -320,7 +378,7 @@ FP LWC 是 symmetric 单截断参数，可调空间小于旧 INT asymmetric
 ## 接手检查清单
 
 - 从仓库根目录执行命令，launcher 使用 `scripts/` 下的正式路径；
-- 推荐数据只使用 `artifacts/data/onerec_data/benchmark_data`；
+- 推荐数据只使用 `/root/dataDisk/guowei/data/onerec_data/benchmark_data`；
 - 核对模型大小、calib/test 数量、seed、beam 和 activation 格式；
 - real FP8 与 fake-QDQ 不得混作时延、显存或真实吞吐结论；
 - generation 时延不包含离线 Hessian/OmniQuant calibration；

@@ -83,11 +83,11 @@ for path in (PROJECT_ROOT, BENCHMARK_ROOT):
 
 from benchmark import Benchmark  # noqa: E402
 from benchmark.tasks.v1_0.registry import get_loader, get_task_config  # noqa: E402
-from shared.paths import data_root, fake_results_root, model_root  # noqa: E402
+from shared.paths import benchmark_data_root, fake_results_root, model_root  # noqa: E402
 
 
 DEFAULT_MODEL_PATH = str(model_root() / "1.7B")
-DEFAULT_DATA_DIR = str(data_root() / "onerec_data" / "benchmark_data")
+DEFAULT_DATA_DIR = str(benchmark_data_root())
 DEFAULT_OUTPUT_DIR = str(fake_results_root() / "recommender" / "ptq_ad")
 DEFAULT_TASK = "ad"
 TASK_CHOICES = ("ad", "product", "video", "label_pred")
@@ -190,17 +190,30 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=0,
         help=(
-            "RTN/SmoothQuant weight group size along Linear in_features. "
-            "0 keeps one scale/zero-point per output channel."
+            "RTN/SmoothQuant/OmniQuant-LWC weight group size along Linear "
+            "in_features. 0 keeps one range per output channel."
         ),
     )
     parser.add_argument(
         "--omni_lwc",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="Enable per-output-channel learnable weight clipping.",
+        help=(
+            "Enable learnable weight clipping per output channel, or per "
+            "input group when --weight_group_size is positive."
+        ),
     )
     parser.add_argument("--no-omni-lwc", dest="omni_lwc", action="store_false", help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--omni_symmetric_lwc_mode",
+        choices=("absmax", "two_sided"),
+        default="absmax",
+        help=(
+            "Symmetric weight LWC parameterization: one absmax factor, or "
+            "independent positive/negative clipping factors before the same "
+            "zero-centered FP/INT QDQ."
+        ),
+    )
     parser.add_argument(
         "--omni_let",
         action=argparse.BooleanOptionalAction,
@@ -428,11 +441,11 @@ def parse_args() -> argparse.Namespace:
 def _attach_fixed_defaults(args: argparse.Namespace) -> None:
     if args.weight_group_size < 0:
         raise ValueError("--weight_group_size must be 0 or a positive integer.")
-    groupwise_modes = {"baseline_w8a8", "baseline_qdq", "smoothquant_w8a8"}
+    groupwise_modes = {"baseline_w8a8", "baseline_qdq", "smoothquant_w8a8", "omniquant"}
     if args.weight_group_size > 0 and args.mode not in groupwise_modes:
         raise ValueError(
             "--weight_group_size is currently supported only for RTN "
-            "(baseline_qdq/baseline_w8a8) and SmoothQuant."
+            "(baseline_qdq/baseline_w8a8), SmoothQuant, and OmniQuant."
         )
     if args.weight_group_size > 0 and args.weight_quant_format == "none":
         raise ValueError("--weight_group_size requires a quantized weight format.")
@@ -1416,6 +1429,8 @@ def build_omniquant_config(args: argparse.Namespace) -> OmniQuantConfig:
         weight_quant_format=args.weight_quant_format,
         activation_quant_format=args.activation_quant_format,
         weight_quant_scheme=args.weight_quant_scheme,
+        symmetric_lwc_mode=args.omni_symmetric_lwc_mode,
+        weight_group_size=args.weight_group_size,
         use_lwc=args.omni_lwc,
         use_let=args.omni_let,
         learn_let=args.omni_let_mode == "learned",
@@ -1524,9 +1539,19 @@ def main() -> None:
         raise ValueError("OmniQuant checkpoint options require --mode omniquant.")
     if not math.isfinite(args.omni_lfq_loss_weight) or args.omni_lfq_loss_weight < 0.0:
         raise ValueError("--omni_lfq_loss_weight must be finite and non-negative.")
-    if args.omni_final_objective == "lfq_ce" and args.omni_lfq_loss_weight == 0.0:
+    if (
+        not math.isfinite(args.omni_lfq_boundary_loss_weight)
+        or args.omni_lfq_boundary_loss_weight < 0.0
+    ):
+        raise ValueError("--omni_lfq_boundary_loss_weight must be finite and non-negative.")
+    if (
+        args.omni_final_objective == "lfq_ce"
+        and args.omni_lfq_loss_weight == 0.0
+        and args.omni_lfq_boundary_loss_weight == 0.0
+    ):
         raise ValueError(
-            "LFQ final-block training requires a positive --omni_lfq_loss_weight."
+            "LFQ final-block training requires a positive --omni_lfq_loss_weight "
+            "or --omni_lfq_boundary_loss_weight."
         )
     if args.calibration_only and args.evaluate:
         raise ValueError("--calibration_only and --evaluate are mutually exclusive.")
@@ -1707,6 +1732,7 @@ def main() -> None:
         "gptq_damp_percent": args.gptq_damp_percent,
         "gptq_block_size": args.gptq_block_size,
         "omni_lwc": args.omni_lwc,
+        "omni_symmetric_lwc_mode": args.omni_symmetric_lwc_mode,
         "weight_quant_scheme": args.weight_quant_scheme,
         "weight_group_size": (
             None if args.mode == "full_precision" else args.weight_group_size
