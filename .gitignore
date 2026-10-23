@@ -10,6 +10,17 @@
 *~
 *.orig
 
+# Local credentials (commit only clearly named example configurations)
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.local.json
+*.pem
+*.key
+/.aws/
+/.netrc
+
 # OS
 .DS_Store
 Thumbs.db
@@ -81,3 +92,15 @@ core.*
 /paper_draft/
 PTQ4RecModel.md
 /*-PPT大纲.md
+/WWW2027_PAPER_WORKPLAN.md
+/www_todo_0927.md
+/docs/PTQ4RecModel_outline.md
+/docs/PTQ4RecModel_report.md
+/report_references/
+
+# Keep manuscript drafts private; experiment sources under paper/ remain usable.
+/paper/*.tex
+/paper/tables/
+/paper/figure/
+/paper/motivation/MOTIVATION_PLAN.md
+/paper/efficiency/figures/

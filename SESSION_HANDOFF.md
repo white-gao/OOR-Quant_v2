@@ -1,5 +1,28 @@
 # OOR-Quant 会话迁移说明
 
+## 2026-10-23 迁移补充（优先于下方历史记录）
+
+- 当前主要方法为 FlatQuant 参数化 + 最后一个 block 的 distribution/ABC CE
+  与 0.3 boundary 联合对齐（RecQuant）。主实验为 per-output-channel，
+  W8A8=FP8 W/A，W4A8=FP4 W + FP8 A；不要把下方早期 INT4/OmniQuant 计划当成现状。
+- 本次迁移保留核心代码、8B 主实验/消融/跨域入口、RecIF BF16 基线，以及
+  `paper/motivation/`、`paper/efficiency/` 内的实验与绘图源文件。
+  论文正文、私人报告、API 密钥及大型产物不通过 Git 上传；本地文件不删除。
+- 新服务器的依赖、路径变量、数据/checkpoint 搬运与预检见根目录 README 的
+  **Moving to another server**。`requirements-migration.txt` 对应当前核心环境；
+  原 `requirements.txt` 不是当前环境的准确锁定文件。
+- RecIF 已完成 OneRec-1.7B BF16：interactive 1000 条，Pass@32=0.33、
+  Recall@32=0.2045972222；label_pred 346190 条，AUC=0.6185391043。
+  item_understand 共 500 条，完整 judge 评分待补。三任务量化能力保留实验待完成，
+  不要将未完成的辅助任务适配草稿当成验证过的启动入口。
+- `run_8b_ad_product_w8a8_main_cuda67.sh` 虽保留历史文件名，已支持两种精度，
+  默认两者都处理；需要只跑一种时显式指定 `PRECISIONS`。
+  `run_8b_product_w4a8_flatquant_recquant_train_cuda6.sh` 仅训练，不自动测评。
+- 迁移后先检查配置和小规模链路，再启动全量任务。不要为迁就路径变化而修改
+  历史结果的来源指纹，也不要把效率 mockup 的示意值用于论文实验结论。
+
+---
+
 更新日期：2026-08-24。本文件记录当前研究主线、有效结果、代码状态与下一步
 实验，供新会话直接接手。数值以 `artifacts/results/` 中的最终结果为准。
 

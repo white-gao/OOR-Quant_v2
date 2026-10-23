@@ -83,7 +83,9 @@ else
     OUTPUT_ROOT="${REPO_ROOT}/${OUTPUT_DIR}"
 fi
 SHARD_ROOT="${OUTPUT_ROOT}.shards"
-mkdir -p "${OUTPUT_ROOT}" "${SHARD_ROOT}"
+if [[ "${DRY_RUN}" != "1" ]]; then
+    mkdir -p "${OUTPUT_ROOT}" "${SHARD_ROOT}"
+fi
 
 export PYTHONPATH="${REPO_ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
 RUNNER_ARGS=("$@")
@@ -107,7 +109,9 @@ run_shard() {
     shard_label="$(printf 'shard_%03d_of_%03d' "${shard_id}" "${NUM_SHARDS}")"
     local log_dir="${SHARD_ROOT}/${shard_label}"
     local log_file="${log_dir}/run.log"
-    mkdir -p "${log_dir}"
+    if [[ "${DRY_RUN}" != "1" ]]; then
+        mkdir -p "${log_dir}"
+    fi
 
     local command=(
         "${PYTHON_BIN}" -u -m fake_quant.run_m1_onerec_ad
@@ -132,8 +136,12 @@ run_shard() {
 
 declare -a SHARD_PIDS=()
 for shard_id in "${!GPU_IDS[@]}"; do
-    run_shard "${shard_id}" "${GPU_IDS[${shard_id}]}" &
-    SHARD_PIDS[${shard_id}]=$!
+    if [[ "${DRY_RUN}" == "1" ]]; then
+        run_shard "${shard_id}" "${GPU_IDS[${shard_id}]}"
+    else
+        run_shard "${shard_id}" "${GPU_IDS[${shard_id}]}" &
+        SHARD_PIDS[${shard_id}]=$!
+    fi
 done
 
 failed=0

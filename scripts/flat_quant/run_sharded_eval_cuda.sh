@@ -136,8 +136,12 @@ run_shard() {
 
 declare -a SHARD_PIDS=()
 for shard_id in "${!GPU_IDS[@]}"; do
-    run_shard "${shard_id}" "${GPU_IDS[${shard_id}]}" &
-    SHARD_PIDS[${shard_id}]=$!
+    if [[ "${DRY_RUN}" == "1" ]]; then
+        run_shard "${shard_id}" "${GPU_IDS[${shard_id}]}"
+    else
+        run_shard "${shard_id}" "${GPU_IDS[${shard_id}]}" &
+        SHARD_PIDS[${shard_id}]=$!
+    fi
 done
 
 failed=0

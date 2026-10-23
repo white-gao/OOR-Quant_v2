@@ -1,0 +1,22 @@
+# Core fake-QDQ / recommendation evaluation / analysis dependencies.
+# Snapshot of the working Python 3.10 environment, 2026-10-23.
+# Install CUDA PyTorch separately for the target GPU/driver. The source host
+# uses torch 2.9.0+cu128 (which supplies its compatible Triton dependency).
+# Real FP8 custom kernels and external judges require separate setup; see README.
+accelerate==1.8.1
+datasets==4.6.0
+huggingface-hub==0.36.0
+Jinja2==3.1.6
+matplotlib==3.10.9
+numpy==2.2.6
+pandas==2.2.3
+psutil==7.2.2
+pyarrow==23.0.1
+pytest==8.3.5
+PyYAML==6.0.2
+rich==13.9.4
+safetensors==0.5.3
+scikit-learn==1.7.2
+scipy==1.15.3
+tqdm==4.67.1
+transformers==4.57.6

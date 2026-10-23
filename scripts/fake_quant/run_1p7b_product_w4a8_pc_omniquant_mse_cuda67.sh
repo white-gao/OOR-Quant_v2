@@ -39,15 +39,16 @@ LWC_LR="${LWC_LR:-1e-2}"
 INIT_LWC_LOGIT="${INIT_LWC_LOGIT:-4.0}"
 EVAL_SAMPLE_SIZE="${EVAL_SAMPLE_SIZE:-full}"
 OVERWRITE="${OVERWRITE:-0}"
+EVAL_OVERWRITE="${EVAL_OVERWRITE:-${OVERWRITE}}"
 DRY_RUN="${DRY_RUN:-0}"
 
+MODEL_NAME="$(basename "${MODEL_PATH%/}")"
 RESULTS_ROOT="${RESULTS_ROOT:-${ARTIFACTS_ROOT}/results/fake_quant/recommender/1p7b_${TASK}_${QUANT_LABEL}_pc_omniquant_lwc_mse_prefix${PREFIX_CALIB_SAMPLES}_final${FINAL_CALIB_SAMPLES}_epoch${EPOCHS}}"
 PREFIX_OUTPUT_DIR="${PREFIX_OUTPUT_DIR:-${RESULTS_ROOT}/prefix_calib${PREFIX_CALIB_SAMPLES}}"
-PREFIX_CHECKPOINT_DIR="${PREFIX_CHECKPOINT_DIR:-${PREFIX_OUTPUT_DIR}/1.7B/${TASK}/omniquant_calibration}"
+PREFIX_CHECKPOINT_DIR="${PREFIX_CHECKPOINT_DIR:-${PREFIX_OUTPUT_DIR}/${MODEL_NAME}/${TASK}/omniquant_calibration}"
 MSE_CALIB_DIR="${MSE_CALIB_DIR:-${RESULTS_ROOT}/mse_lwc_final${FINAL_CALIB_SAMPLES}_calibration}"
 MSE_EVAL_DIR="${MSE_EVAL_DIR:-${RESULTS_ROOT}/${TASK}_${EVAL_SAMPLE_SIZE}_eval}"
 
-MODEL_NAME="$(basename "${MODEL_PATH%/}")"
 MSE_CHECKPOINT_DIR="${MSE_CALIB_DIR}/${MODEL_NAME}/${TASK}/omniquant_calibration"
 FINAL_LAYER=$((NUM_LAYERS - 1))
 PREFIX_LAST_LAYER=$((FINAL_LAYER - 1))
@@ -58,6 +59,10 @@ if [[ "${OVERWRITE}" != "0" && "${OVERWRITE}" != "1" ]]; then
 fi
 if [[ "${DRY_RUN}" != "0" && "${DRY_RUN}" != "1" ]]; then
     echo "DRY_RUN must be 0 or 1; got ${DRY_RUN}." >&2
+    exit 2
+fi
+if [[ "${EVAL_OVERWRITE}" != "0" && "${EVAL_OVERWRITE}" != "1" ]]; then
+    echo "EVAL_OVERWRITE must be 0 or 1; got ${EVAL_OVERWRITE}." >&2
     exit 2
 fi
 case "${TASK}" in
@@ -229,7 +234,7 @@ else
     fi
 fi
 
-if [[ -s "${MSE_EVAL_DIR}/eval_results.json" && "${OVERWRITE}" != "1" ]]; then
+if [[ -s "${MSE_EVAL_DIR}/eval_results.json" && "${EVAL_OVERWRITE}" != "1" ]]; then
     echo "[3/3 ${TASK} evaluation] complete eval_results.json found; skipping."
 else
     if [[ "${DRY_RUN}" != "1" ]] && ! checkpoint_range_complete "${MSE_CHECKPOINT_DIR}" 0 "${FINAL_LAYER}"; then
@@ -244,7 +249,7 @@ else
     DATA_DIR="${DATA_DIR}" \
     OUTPUT_DIR="${MSE_EVAL_DIR}" \
     PYTHON_BIN="${PYTHON_BIN}" \
-    OVERWRITE="${OVERWRITE}" \
+    OVERWRITE="${EVAL_OVERWRITE}" \
     DRY_RUN="${DRY_RUN}" \
         bash scripts/fake_quant/run_sharded_eval_cuda.sh \
         --mode omniquant \

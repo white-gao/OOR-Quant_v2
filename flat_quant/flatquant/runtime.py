@@ -12,7 +12,7 @@ from dataclasses import asdict, dataclass
 import copy
 import math
 from pathlib import Path
-from typing import Any, Literal, Mapping, Sequence
+from typing import Any, Callable, Literal, Mapping, Sequence
 
 import torch
 import torch.nn as nn
@@ -1100,6 +1100,7 @@ def _train_flat_block(
     quant_inputs: Sequence[Batch],
     config: FlatQuantCoreConfig,
     layer_idx: int,
+    reconstruction_loss: Callable[[torch.Tensor, torch.Tensor], torch.Tensor] = F.mse_loss,
 ) -> tuple[
     float,
     float,
@@ -1108,6 +1109,8 @@ def _train_flat_block(
     int | None,
     tuple[FlatQuantEpochMetric, ...],
 ]:
+    # The optional pilot callback changes the reduction only; logged *_mse
+    # fields then denote that weighted reconstruction. Production keeps F.mse_loss.
     if len(fp_inputs) != len(quant_inputs) or not fp_inputs:
         raise ValueError("FlatQuant FP/quant calibration streams must be non-empty and aligned.")
     device = _module_device(train_block)
@@ -1158,7 +1161,7 @@ def _train_flat_block(
                 kwargs = _move_tree_to_device(kwargs, device)
                 prediction = _first_tensor(train_block(*args, **kwargs))
                 target = target_cpu.to(device=device, dtype=prediction.dtype)
-                total += float(F.mse_loss(prediction.float(), target.float()))
+                total += float(reconstruction_loss(prediction.float(), target.float()))
         if was_training:
             train_block.train()
         return total / len(input_batches)
@@ -1297,7 +1300,7 @@ def _train_flat_block(
             kwargs = _move_tree_to_device(kwargs, device)
             prediction = _first_tensor(train_block(*args, **kwargs))
             target = target_cpu.to(device=device, dtype=prediction.dtype)
-            mse = F.mse_loss(prediction.float(), target.float())
+            mse = reconstruction_loss(prediction.float(), target.float())
             if not torch.isfinite(mse):
                 raise FloatingPointError("Non-finite FlatQuant block MSE before optimizer step.")
             optimization_loss = (

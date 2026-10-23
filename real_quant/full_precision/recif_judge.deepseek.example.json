@@ -1,0 +1,12 @@
+{
+  "provider": "deepseek",
+  "base_url": "https://api.deepseek.com",
+  "model_name": "deepseek-flash",
+  "api_key_env": "DEEPSEEK_API_KEY",
+  "thinking": "disabled",
+  "temperature": 0.01,
+  "max_new_tokens": 10000,
+  "timeout_seconds": 120,
+  "max_retries": 3,
+  "retry_delay": 2
+}

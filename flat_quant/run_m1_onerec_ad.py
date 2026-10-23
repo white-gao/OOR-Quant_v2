@@ -1871,7 +1871,12 @@ def main() -> None:
     )
     calib_data_dir = args.data_dir
     eval_data_dir = args.data_dir
-    calib_split = default_calib_split(calib_data_dir, args.split, task_name=args.task)
+    flat_load_only = args.mode == "flatquant_core" and bool(args.flat_load_checkpoint_dir)
+    calib_split = (
+        None if flat_load_only
+        else default_calib_split(calib_data_dir, args.split, task_name=args.task)
+    )
+    calibration_data_loaded = False
 
     layers = get_transformer_layers(model)
     layer_indices = parse_layer_indices(args.layers, num_layers=len(layers))
@@ -1879,6 +1884,17 @@ def main() -> None:
 
     if args.mode == "full_precision":
         pass
+    elif flat_load_only:
+        # Restoring a calibrated model needs no target-domain calibration data.
+        # Keep this before the branch that loads and tokenizes calibration rows.
+        print("[flatquant][load_only] restoring checkpoints; calibration data loading skipped")
+        baseline_summaries = restore_flatquant_core_layers_from_checkpoints(
+            model=model,
+            layer_indices=layer_indices,
+            config=build_flatquant_config(args),
+            checkpoint_dir=resolve_repo_path(args.flat_load_checkpoint_dir),
+            act_quant_mode=args.act_quant_mode,
+        )
     elif args.mode in {"baseline_w8a8", "baseline_qdq"}:
         baseline_summaries = apply_baseline_layers(
             model=model,
@@ -1912,6 +1928,7 @@ def main() -> None:
             require_answer=False,
             drop_final_assistant=True,
         )
+        calibration_data_loaded = True
         if not calib_data:
             raise ValueError(
                 "No calibration samples were loaded. Check --data_dir, --task, and the calibration parquet."
@@ -1978,14 +1995,6 @@ def main() -> None:
                 act_quant_mode=args.act_quant_mode,
                 damp_percent=args.gptq_damp_percent,
                 block_size=args.gptq_block_size,
-            )
-        elif args.mode == "flatquant_core" and args.flat_load_checkpoint_dir:
-            baseline_summaries = restore_flatquant_core_layers_from_checkpoints(
-                model=model,
-                layer_indices=layer_indices,
-                config=build_flatquant_config(args),
-                checkpoint_dir=resolve_repo_path(args.flat_load_checkpoint_dir),
-                act_quant_mode=args.act_quant_mode,
             )
         elif args.mode == "flatquant_core":
             baseline_summaries = apply_flatquant_core_layers(
@@ -2207,6 +2216,7 @@ def main() -> None:
         ),
         "data_dir": args.data_dir,
         "calib_data_dir": calib_data_dir,
+        "calibration_data_loaded": calibration_data_loaded,
         "eval_data_dir": eval_data_dir,
         "split": args.split,
         "calib_split": calib_split,

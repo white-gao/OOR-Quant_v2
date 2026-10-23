@@ -1,0 +1,4 @@
+# Optional: caption scoring only. Generation/AUC/SID metrics do not need these.
+# Same judge protocol over Vertex AI, using the replacement Google Gen AI SDK.
+bert-score==0.3.13
+google-genai==1.55.0

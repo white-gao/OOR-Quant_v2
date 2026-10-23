@@ -1,0 +1,9 @@
+{
+  "project": "YOUR_GCP_PROJECT",
+  "location": "us-central1",
+  "model_name": "gemini-2.5-flash-lite",
+  "temperature": 0.01,
+  "max_new_tokens": 10000,
+  "max_retries": 3,
+  "retry_delay": 2
+}

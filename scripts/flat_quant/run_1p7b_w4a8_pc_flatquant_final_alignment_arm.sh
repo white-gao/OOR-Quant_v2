@@ -286,7 +286,7 @@ run_evaluation() {
             --eval_sample_size "${EVAL_SAMPLE_SIZE}"
 }
 
-echo "[protocol] Qwen3-1.7B ${TASK} ${QUANT_LABEL} per-output-channel FlatQuant final alignment"
+echo "[protocol] model=${MODEL_NAME} layers=${NUM_LAYERS} ${TASK} ${QUANT_LABEL} per-output-channel FlatQuant final alignment"
 echo "[protocol] source=${SOURCE_CHECKPOINT_DIR}"
 echo "[protocol] train=[0,${TRAIN_SAMPLES}) epochs=${EPOCHS} seed=42"
 echo "[protocol] learn_transform=${LEARN_TRANSFORM} learn_lac=${LEARN_LAC} train_lwc=1"

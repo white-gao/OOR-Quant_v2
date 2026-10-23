@@ -1,0 +1,87 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="1335" viewBox="0 0 1280 1335" role="img" aria-labelledby="title desc">
+  <title id="title">Boundary loss 计算示意图</title>
+  <desc id="desc">对每个 SID 阶段，教师选 ranks 1至32 和33至64，学生使用相同索引。分别计算32乘32的教师与学生logit gap。教师gap决定tie过滤与pair权重，gap误差经过SmoothL1，再按权重和归一化。最后平均A/B/C；组合总目标时再乘0.3。</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 Z" fill="#64748b"/></marker>
+    <style>
+      text {font-family:"Noto Sans CJK SC","Microsoft YaHei","PingFang SC",Arial,sans-serif;fill:#172337}
+      .title {font-size:32px;font-weight:700}
+      .label {font-size:22px;font-weight:600;text-anchor:middle}
+      .body {font-size:20px;text-anchor:middle}
+      .note {font-size:17px;fill:#54657c}
+      .math {font-family:"DejaVu Sans Mono",Consolas,monospace;font-size:21px;text-anchor:middle}
+      .edge {fill:none;stroke:#64748b;stroke-width:2.5;stroke-linejoin:round;marker-end:url(#arrow)}
+      .teacher {fill:#eaf3ff;stroke:#78a4db;stroke-width:2}
+      .student {fill:#fff1e5;stroke:#e4a26a;stroke-width:2}
+      .operation {fill:#f0edf9;stroke:#a79acb;stroke-width:2}
+      .result {fill:#e4f4ed;stroke:#66a48b;stroke-width:2}
+    </style>
+  </defs>
+  <rect width="1280" height="1335" rx="20" fill="#ffffff"/>
+  <text x="64" y="61" class="title">Boundary · 跨 top-32 边界的 gap 对齐</text>
+  <text x="64" y="98" class="note">以下流程对 s = A / B / C 独立执行；排序只在当前 slot 的合法 SID 子词表内进行。</text>
+
+  <rect x="80" y="149" width="520" height="77" rx="14" class="teacher"/>
+  <text x="340" y="181" class="label">教师 logits：t_s</text>
+  <text x="340" y="209" class="body">固定参考，不反传</text>
+  <rect x="800" y="149" width="400" height="77" rx="14" class="student"/>
+  <text x="1000" y="181" class="label">学生 logits：z_s</text>
+  <text x="1000" y="209" class="body">保留学生梯度</text>
+  <path d="M 340 226 V 280" class="edge"/>
+  <path d="M 1000 226 V 308" class="edge"/>
+
+  <rect x="80" y="280" width="520" height="119" rx="14" class="teacher"/>
+  <text x="340" y="310" class="label">教师排序，选取 top-64</text>
+  <text x="340" y="341" class="body">P：第 1–32 名；N：第 33–64 名</text>
+  <text x="340" y="376" class="note" text-anchor="middle">输出两组 token 索引及其教师 logits</text>
+  <rect x="800" y="308" width="400" height="91" rx="14" class="student"/>
+  <text x="1000" y="344" class="label">按 P / N 索引取学生 logits</text>
+  <text x="1000" y="376" class="body">不重新选学生 top-32</text>
+  <path d="M 600 353 H 800" class="edge" stroke-dasharray="7 5"/>
+  <text x="700" y="327" class="note" text-anchor="middle">同一组候选索引</text>
+
+  <path d="M 340 399 V 460" class="edge"/>
+  <path d="M 1000 399 V 460" class="edge"/>
+  <rect x="80" y="460" width="520" height="96" rx="14" class="teacher"/>
+  <text x="340" y="490" class="label">教师跨边界 gap</text>
+  <text x="340" y="520" class="math">ΔT[i,j] = t_s[i] - t_s[j]</text>
+  <text x="340" y="543" class="note" text-anchor="middle">i 属于 P，j 属于 N；形状 [32, 32]</text>
+  <rect x="800" y="460" width="400" height="96" rx="14" class="student"/>
+  <text x="1000" y="490" class="label">学生同一候选对的 gap</text>
+  <text x="1000" y="520" class="math">ΔQ[i,j] = z_s[i] - z_s[j]</text>
+  <text x="1000" y="543" class="note" text-anchor="middle">形状 [32, 32]；使用 logits 而非概率</text>
+
+  <path d="M 290 556 V 665" class="edge"/>
+  <path d="M 600 508 H 635 V 602 H 760 V 637" class="edge"/>
+  <text x="663" y="587" class="note">目标 ΔT</text>
+  <path d="M 1000 556 V 637" class="edge"/>
+  <rect x="80" y="665" width="420" height="123" rx="14" class="teacher"/>
+  <text x="290" y="698" class="label">教师决定 pair 权重 w</text>
+  <text x="290" y="734" class="math">ΔT ≤ 0.01 → w = 0</text>
+  <text x="290" y="766" class="body">否则 w = min(ΔT, 1)</text>
+  <rect x="620" y="637" width="580" height="98" rx="14" class="operation"/>
+  <text x="910" y="675" class="label">逐 pair 计算 gap 误差</text>
+  <text x="910" y="709" class="math">e[i,j] = ΔQ[i,j] - ΔT[i,j]</text>
+
+  <path d="M 910 735 V 814" class="edge"/>
+  <rect x="620" y="814" width="580" height="90" rx="14" class="operation"/>
+  <text x="910" y="850" class="math">r[i,j] = SmoothL1(e[i,j])</text>
+  <text x="910" y="882" class="body">β = 1：小误差用二次项，大误差用线性项</text>
+
+  <path d="M 290 788 V 943 H 480 V 989" class="edge"/>
+  <text x="313" y="906" class="note">固定权重 w</text>
+  <path d="M 910 904 V 989" class="edge"/>
+  <text x="934" y="952" class="note">逐 pair 损失 r</text>
+  <rect x="210" y="989" width="990" height="111" rx="14" class="operation"/>
+  <text x="705" y="1023" class="label">当前 slot：加权求和，再除以权重和</text>
+  <text x="705" y="1056" class="math">B_s = sum(w * r) / max(sum(w), 1)</text>
+  <text x="705" y="1082" class="note" text-anchor="middle">对全部 32 × 32 个 pair 求和；所有权重为 0 时，本项为 0</text>
+
+  <path d="M 705 1100 V 1160" class="edge"/>
+  <rect x="270" y="1160" width="870" height="85" rx="14" class="result"/>
+  <text x="705" y="1192" class="label">A / B / C 分别计算，然后等权平均</text>
+  <text x="705" y="1225" class="math">L_Boundary = (B_A + B_B + B_C) / 3</text>
+
+  <text x="64" y="1286" class="note">图示为单样本；随后对样本取平均。候选、教师 gap 和权重均停止梯度。</text>
+  <text x="64" y="1315" class="note">最终组合：L_total = L_ABC + 0.3 × L_Boundary；0.3 不在单个 pair 内重复计算。</text>
+</svg>

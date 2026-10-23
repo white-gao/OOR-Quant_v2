@@ -1,135 +1,101 @@
-# ABC-LFQ Boundary Loss 核心公式
+# ABC-LFQ + 0.3 × Boundary：对齐损失
 
-本文只记录当前代码中的核心定义；公式使用标准 LaTeX，可由 Markdown 数学渲染器编译。
+本文对应当前采用的复合配置，公式与现有实现一致。先定义单条样本的损失；训练时对样本取平均。
 
-## 1. 符号
-
-| 符号 | 含义 |
-| --- | --- |
-| $q$ | SID slot，$q \in \{A,B,C\}$ |
-| $t_i^q$ | FP teacher 对 token $i$ 的 logit |
-| $s_i^q$ | 量化 student 对 token $i$ 的 logit |
-| $K$ | teacher top-$K$ 候选数，默认 32 |
-| $N$ | teacher 边界负候选数，默认 32 |
-| $\tau$ | tie 过滤阈值，默认 0.01 |
-| $\gamma$ | teacher gap 权重尺度，默认 1.0 |
-| $B$ | batch size |
-
-以下公式先描述单条样本，并省略样本下标。
-
-## 2. Teacher 候选集合
-
-每个 slot 的正、负候选集合完全由 FP teacher 决定：
+## 1. 总目标
 
 $$
-\begin{aligned}
-\mathcal{P}_q &= \operatorname{TopK}_K(t^q), \\
-\mathcal{Q}_q &= \operatorname{Ranks}_{K+1:K+N}(t^q).
-\end{aligned}
+\boxed{
+\mathcal L
+=\mathcal L_{\mathrm{ABC}}+0.3\,\mathcal L_{\mathrm{Boundary}}
+=\frac{1}{3}\sum_{s\in\{A,B,C\}}
+\left(\mathcal L_{\mathrm{CE}}^s+0.3\,\mathcal L_{\mathrm{bd}}^s\right)
+}
 $$
 
-$\mathcal{Q}_q$ 不是随机负样本，而是紧邻 top-$K$ 边界的候选。
+A/B/C 等权。ABC-LFQ 对齐各阶段的整体候选分布；Boundary 额外强调 top-32 的跨边界分数差距。系数 0.3 是损失权重，不表示 Boundary 占总损失或梯度的 30%。
 
-## 3. Teacher gap 与 student gap
+## 2. ABC-LFQ：软分布对齐
 
-对任意 $i \in \mathcal{P}_q$、$j \in \mathcal{Q}_q$：
+![ABC-LFQ 计算示意图](figures/abc_lfq_loss_flow.svg)
 
-$$
-\begin{aligned}
-g_{ij}^{T,q} &= t_i^q-t_j^q, \\
-g_{ij}^{S,q} &= s_i^q-s_j^q, \\
-e_{ij}^q &= g_{ij}^{S,q}-g_{ij}^{T,q}.
-\end{aligned}
-$$
+蓝色为冻结教师分支，橙色为学生分支。图中流程对三个 slot 分别执行，再等权平均。
 
-## 4. Tie-aware pair 权重
+令 $t^s$、$z^s$ 分别为全精度教师和量化学生在阶段 $s$ 的 logits，$\mathcal V_s$ 为该阶段的合法 SID 子词表：
 
 $$
-w_{ij}^q =
-\begin{cases}
-0, & g_{ij}^{T,q} \le \tau, \\
-\min\left(g_{ij}^{T,q}/\gamma,\,1\right), & g_{ij}^{T,q} > \tau.
-\end{cases}
-$$
-
-teacher 无法可靠区分的近似 tie pair 不参与训练；其余 pair 随 teacher gap 增大而加权，达到 $\gamma$ 后权重饱和为 1。
-
-## 5. 单个 pair 的损失
-
-$$
-\ell_{ij}^q = \operatorname{SmoothL1}\!\left(e_{ij}^q\right).
-$$
-
-当前使用 PyTorch 默认参数，对应：
-
-$$
-\operatorname{SmoothL1}(e) =
-\begin{cases}
-\frac{1}{2}e^2, & |e| < 1, \\
-|e|-\frac{1}{2}, & |e| \ge 1.
-\end{cases}
-$$
-
-因此该损失不仅要求 student 保持正确边界顺序，还会让 student 恢复 teacher 的实际 gap。
-
-## 6. 单个 slot 的 boundary loss
-
-对样本 $b$ 的所有 $K \times N$ 个 pair 加权归一化：
-
-$$
-L_{\mathrm{bdry},b}^q =
-\frac{
-\sum_{i \in \mathcal{P}_q}\sum_{j \in \mathcal{Q}_q}
-w_{ij}^q\ell_{ij}^q
-}{
-\max\left(
-\sum_{i \in \mathcal{P}_q}\sum_{j \in \mathcal{Q}_q}
-w_{ij}^q,\,1
-\right)
-}.
-$$
-
-再对 batch 内样本取平均：
-
-$$
-L_{\mathrm{bdry}}^q =
-\frac{1}{B}\sum_{b=1}^{B}L_{\mathrm{bdry},b}^q.
-$$
-
-## 7. A/B/C 合并
-
-$$
-L_{\mathrm{bdry}} =
-\sum_{q \in \{A,B,C\}}\alpha_q L_{\mathrm{bdry}}^q,
+p^s=\operatorname{softmax}(t^s),\qquad
+q^s=\operatorname{softmax}(z^s),
 \qquad
-\alpha_A=\alpha_B=\alpha_C=\frac{1}{3}.
+\mathcal L_{\mathrm{CE}}^s
+=-\sum_{i\in\mathcal V_s}p_i^s\log q_i^s.
 $$
 
-## 8. 最终训练目标
+softmax 仅在对应 slot 子词表内计算，温度为 1。教师分布固定，因此优化该 soft CE 与优化 $\mathrm{KL}(p^s\Vert q^s)$ 等价；它不是 GT token 的 one-hot CE。
+
+## 3. Boundary：跨 top-32 边界的差距对齐
+
+![Boundary 计算示意图](figures/boundary_loss_flow.svg)
+
+虚线传递教师选出的候选索引；学生不自行重新筛选候选。权重和教师 gap 均不反传。
+
+对每个阶段，按照**教师 logits** 排序：
+
+- $\mathcal P_s$：第 1–32 名候选；
+- $\mathcal N_s$：第 33–64 名候选。
+
+对每个 $i\in\mathcal P_s$、$j\in\mathcal N_s$，定义教师和学生的 logit 差距：
 
 $$
-L_{\mathrm{total}} =
-\lambda_{\mathrm{ABC}}L_{\mathrm{ABC}}
-+\lambda_{\mathrm{bdry}}L_{\mathrm{bdry}}.
+\Delta_{ij}^{T,s}=t_i^s-t_j^s,\qquad
+\Delta_{ij}^{Q,s}=z_i^s-z_j^s.
 $$
 
-当前受控实验：
+采用当前的 tie 阈值 0.01、gap 权重尺度 1.0：
 
-| 分支 | $\lambda_{\mathrm{ABC}}$ | $\lambda_{\mathrm{bdry}}$ |
-| --- | ---: | ---: |
-| 原 ABC-LFQ | 1.0 | 0.0 |
-| ABC-LFQ + boundary | 1.0 | 0.1 |
-sss
-当 $\lambda_{\mathrm{bdry}}=0$ 时，代码不会构造 top-$(K+N)$ boundary target，行为回退到原 ABC-LFQ。
+$$
+w_{ij}^s
+=\mathbf 1\!\left[\Delta_{ij}^{T,s}>0.01\right]
+\min\!\left(\Delta_{ij}^{T,s},\,1\right).
+$$
 
-## 9. Held-out 诊断
+教师近似并列的 pair 被跳过；其余 pair 的权重随教师 gap 增大，最大为 1。候选、教师 gap 和权重均固定，不参与反向传播。
 
-训练使用连续的 gap matching 损失；以下指标只用于 held-out 诊断，不参与反向传播：
+每个阶段的 Boundary loss 为：
 
-- teacher top-32 保留率；
-- rank 33--64 候选侵入率；
-- rank 64 以后候选侵入率；
-- $g_{ij}^{S,q}\le 0$ 的 pair violation rate；
-- student gap 与 teacher gap 的 MAE。
+$$
+\mathcal L_{\mathrm{bd}}^s
+=
+\frac{
+\displaystyle\sum_{i\in\mathcal P_s,\,j\in\mathcal N_s}
+w_{ij}^s\,\rho\!\left(\Delta_{ij}^{Q,s}-\Delta_{ij}^{T,s}\right)
+}{
+\displaystyle\max\!\left(
+\sum_{i\in\mathcal P_s,\,j\in\mathcal N_s}w_{ij}^s,\,1
+\right)
+},
+\qquad
+\rho(e)=
+\begin{cases}
+\frac12 e^2,& |e|<1,\\
+|e|-\frac12,& |e|\ge1.
+\end{cases}
+$$
 
-当前协议：Layer 0--26 使用前 128 条 calibration；三个 Layer 27 分支使用前 512 条训练；最后 512 条仅用于 held-out 检查。
+$\rho$ 即默认 SmoothL1。每个阶段最多构造 $32\times32$ 个 pair；若全部被过滤，该阶段 Boundary loss 为 0。
+
+这不仅要求学生保持正负候选的顺序，还要求其**分数差距接近教师**。例如教师 gap 为 0.8，学生 gap 为 0.1：虽然顺序没错，仍会受到惩罚。
+
+## 4. 训练中的含义与范围
+
+校准输入为以 sid_begin 结尾的 prompt，再追加 GT 的 A、B。最后三个位置分别预测 A、B、C：
+
+- A：给定 prompt；
+- B：给定 prompt 和 GT A；
+- C：给定 prompt 和 GT AB。
+
+GT 用来构造条件前缀；真正的对齐目标由全精度教师提供。当前流程在最后一个 block 优化量化参数，前缀、final norm 和 LM head 冻结；使用 FlatQuant 联合版本时，可学习参数包括矩阵、对角 scale、LWC 和 LAC。
+
+该损失**不包含 hidden-state MSE**，也不直接优化完整 beam 路径或商品 recall。Boundary 不显式约束 top-32 内部的完整排序，也不主动挖掘教师第 64 名以后的学生侵入候选，因此不能保证 top-32 完全保留。
+
+实现对应：[soft CE 与 Boundary 定义](../flat_quant/omniquant/runtime.py)、[FlatQuant 中的目标组合](../flat_quant/flatquant/runtime.py)。

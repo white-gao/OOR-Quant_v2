@@ -1,0 +1,81 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="1100" viewBox="0 0 1280 1100" role="img" aria-labelledby="title desc">
+  <title id="title">ABC-LFQ loss 计算示意图</title>
+  <desc id="desc">同一 prompt 加 GT A/B 分别通过冻结教师和量化学生。取最后三个预测位置并经过冻结输出投影，在每个 SID 子词表内计算教师 softmax 与学生 log-softmax；逐 slot 计算软交叉熵，再等权平均 A/B/C。仅学生最后 block 的量化参数接受梯度。</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 Z" fill="#64748b"/></marker>
+    <style>
+      text {font-family:"Noto Sans CJK SC","Microsoft YaHei","PingFang SC",Arial,sans-serif;fill:#172337}
+      .title {font-size:32px;font-weight:700}
+      .label {font-size:22px;font-weight:600;text-anchor:middle}
+      .body {font-size:20px;text-anchor:middle}
+      .note {font-size:17px;fill:#54657c}
+      .math {font-family:"DejaVu Sans Mono",Consolas,monospace;font-size:21px;text-anchor:middle}
+      .edge {fill:none;stroke:#64748b;stroke-width:2.5;stroke-linejoin:round;marker-end:url(#arrow)}
+      .bus {fill:none;stroke:#64748b;stroke-width:2.5}
+      .teacher {fill:#eaf3ff;stroke:#78a4db;stroke-width:2}
+      .student {fill:#fff1e5;stroke:#e4a26a;stroke-width:2}
+      .operation {fill:#f0edf9;stroke:#a79acb;stroke-width:2}
+      .result {fill:#e4f4ed;stroke:#66a48b;stroke-width:2}
+    </style>
+  </defs>
+  <rect width="1280" height="1100" rx="20" fill="#ffffff"/>
+  <text x="64" y="61" class="title">ABC-LFQ · 三阶段软分布对齐</text>
+  <text x="64" y="98" class="note">对 A/B/C 的完整 SID 子词表做 soft CE，而不是只监督一个 GT token。</text>
+
+  <rect x="350" y="135" width="580" height="94" rx="14" fill="#f3f6fa" stroke="#becada" stroke-width="2"/>
+  <text x="640" y="165" class="label">同一校准输入</text>
+  <text x="640" y="191" class="math">prompt + GT A + GT B</text>
+  <text x="640" y="214" class="note" text-anchor="middle">prompt 以 sid_begin 结尾；三个末尾位置依次预测 A / B / C</text>
+
+  <path d="M 640 229 V 250 H 325 V 277" class="edge"/>
+  <path d="M 640 250 H 955 V 277" class="edge"/>
+  <rect x="80" y="277" width="490" height="82" rx="14" class="teacher"/>
+  <text x="325" y="310" class="label">全精度教师 T</text>
+  <text x="325" y="339" class="body">模型冻结，不反向传播</text>
+  <rect x="710" y="277" width="490" height="82" rx="14" class="student"/>
+  <text x="955" y="310" class="label">量化学生 Q</text>
+  <text x="955" y="339" class="body">只学习最后 block 的量化参数</text>
+
+  <path d="M 325 359 V 391" class="edge"/>
+  <path d="M 955 359 V 391" class="edge"/>
+  <rect x="80" y="391" width="490" height="84" rx="14" class="teacher"/>
+  <text x="325" y="425" class="body">取末尾三个预测位置的 hidden states</text>
+  <text x="325" y="454" class="body">冻结 final norm + LM head → logits</text>
+  <rect x="710" y="391" width="490" height="84" rx="14" class="student"/>
+  <text x="955" y="425" class="body">取末尾三个预测位置的 hidden states</text>
+  <text x="955" y="454" class="body">冻结 final norm + LM head → logits</text>
+
+  <path d="M 325 475 V 510" class="edge"/>
+  <path d="M 955 475 V 510" class="edge"/>
+  <rect x="80" y="510" width="490" height="106" rx="14" class="teacher"/>
+  <text x="325" y="539" class="body">每个 slot s：截取对应 SID 子词表</text>
+  <text x="325" y="571" class="math">p_s = softmax(t_s)</text>
+  <text x="325" y="599" class="note" text-anchor="middle">教师软目标；向量长度 = 该 slot 词表大小</text>
+  <rect x="710" y="510" width="490" height="106" rx="14" class="student"/>
+  <text x="955" y="539" class="body">每个 slot s：截取相同 SID 子词表</text>
+  <text x="955" y="571" class="math">log q_s = log_softmax(z_s)</text>
+  <text x="955" y="599" class="note" text-anchor="middle">学生 log 概率；梯度经过冻结输出投影</text>
+
+  <path d="M 325 616 V 648 H 470 V 682" class="edge"/>
+  <path d="M 955 616 V 648 H 810 V 682" class="edge"/>
+  <rect x="250" y="682" width="780" height="91" rx="14" class="operation"/>
+  <text x="640" y="715" class="label">逐 slot：逐元素相乘，再对词表求和取负</text>
+  <text x="640" y="749" class="math">CE_s = - sum_i p_s[i] * log q_s[i]</text>
+
+  <path d="M 640 773 V 807 H 370 V 835" class="edge"/>
+  <path d="M 640 807 V 835" class="edge"/>
+  <path d="M 640 807 H 910 V 835" class="edge"/>
+  <rect x="260" y="835" width="220" height="62" rx="12" class="operation"/>
+  <rect x="530" y="835" width="220" height="62" rx="12" class="operation"/>
+  <rect x="800" y="835" width="220" height="62" rx="12" class="operation"/>
+  <text x="370" y="874" class="label">CE_A</text>
+  <text x="640" y="874" class="label">CE_B</text>
+  <text x="910" y="874" class="label">CE_C</text>
+  <path d="M 370 897 V 922 H 910 V 897 M 640 897 V 922" class="bus"/>
+  <path d="M 640 922 V 953" class="edge"/>
+
+  <rect x="290" y="953" width="700" height="84" rx="14" class="result"/>
+  <text x="640" y="985" class="label">A / B / C 等权平均</text>
+  <text x="640" y="1015" class="math">L_ABC = (CE_A + CE_B + CE_C) / 3</text>
+  <text x="64" y="1075" class="note">图示为单样本；随后对样本取平均。softmax、log-softmax 与 loss 使用 FP32。</text>
+</svg>

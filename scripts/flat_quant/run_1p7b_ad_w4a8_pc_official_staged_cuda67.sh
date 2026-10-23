@@ -44,6 +44,7 @@ SMOKE="${SMOKE:-0}"
 RUN_EVAL="${RUN_EVAL:-1}"
 EVAL_SAMPLE_SIZE="${EVAL_SAMPLE_SIZE:-full}"
 OVERWRITE="${OVERWRITE:-0}"
+EVAL_OVERWRITE="${EVAL_OVERWRITE:-${OVERWRITE}}"
 DRY_RUN="${DRY_RUN:-0}"
 
 RUN_ROOT="${RUN_ROOT:-${ARTIFACTS_ROOT}/results/flat_quant/official_fake_quant/1p7b_${TASK}_${QUANT_LABEL}_pc_prefix${PREFIX_CALIB_SAMPLES}_final${FINAL_TRAIN_SAMPLES}_heldout${FINAL_HELDOUT_SAMPLES}_epoch${EPOCHS}}"
@@ -68,6 +69,7 @@ validate_boolean() {
 validate_boolean SMOKE "${SMOKE}"
 validate_boolean RUN_EVAL "${RUN_EVAL}"
 validate_boolean OVERWRITE "${OVERWRITE}"
+validate_boolean EVAL_OVERWRITE "${EVAL_OVERWRITE}"
 validate_boolean DRY_RUN "${DRY_RUN}"
 case "${TASK}" in
     ad|product|video|label_pred) ;;
@@ -199,7 +201,7 @@ run_stage() {
     fi
 }
 
-echo "[protocol] formal FlatQuant fake-quant, Qwen3-1.7B, task=${TASK}, seed=42"
+echo "[protocol] formal FlatQuant fake-quant, model=${MODEL_NAME}, layers=${NUM_LAYERS}, task=${TASK}, seed=42"
 echo "[protocol] weight=${WEIGHT_QUANT_FORMAT} activation=${ACTIVATION_QUANT_FORMAT} / per-output-channel weight scale"
 echo "[protocol] SVD-Cayley matrices + three diagonals + two-sided LWC + two-sided LAC"
 echo "[protocol] AdamW lr=${TRANSFORM_LR}/${LWC_LR}/${LAC_LR}, wd=${WEIGHT_DECAY}, epochs=${EPOCHS}, best_epoch=off"
@@ -271,7 +273,9 @@ FINAL_STAGE=(
 )
 run_stage "${FINAL_STAGE[@]}" "${FINAL_STAGE_ARGS[@]}"
 
-if [[ "${RUN_EVAL}" == "1" ]]; then
+if [[ "${RUN_EVAL}" == "1" && -s "${EVAL_OUTPUT_DIR}/eval_results.json" && "${EVAL_OVERWRITE}" != "1" ]]; then
+    echo "[evaluation] complete eval_results.json found; skipping."
+elif [[ "${RUN_EVAL}" == "1" ]]; then
     if (( ${#GPU_IDS[@]} < 2 )); then
         echo "RUN_EVAL=1 requires at least two GPUs in GPUS." >&2
         exit 2
@@ -305,7 +309,7 @@ if [[ "${RUN_EVAL}" == "1" ]]; then
         DATA_DIR="${DATA_DIR}"
         OUTPUT_DIR="${EVAL_OUTPUT_DIR}"
         PYTHON_BIN="${PYTHON_BIN}"
-        OVERWRITE="${OVERWRITE}"
+        OVERWRITE="${EVAL_OVERWRITE}"
         DRY_RUN="${DRY_RUN}"
     )
     env "${EVAL_ENV[@]}" "${EVAL_COMMAND[@]}"
