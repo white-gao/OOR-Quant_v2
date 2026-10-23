@@ -102,5 +102,6 @@ PTQ4RecModel.md
 /paper/*.tex
 /paper/tables/
 /paper/figure/
+/paper/results/
 /paper/motivation/MOTIVATION_PLAN.md
 /paper/efficiency/figures/
